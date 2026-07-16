@@ -43,24 +43,6 @@ class MembersNotifier extends StateNotifier<int> {
     _ref.invalidate(currentWeekStatusProvider);
     _ref.invalidate(currentWeekStatsProvider);
   }
-
-  /// Inserta un set de miembros ficticios para probar la app.
-  Future<void> seedDemoData() async {
-    final demoNames = [
-      'María Rodríguez',
-      'Carlos Méndez',
-      'Ana Lucía Pérez',
-      'Diego Hernández',
-      'Sofía Castillo',
-      'Luis Torres',
-      'Valentina Gómez',
-      'Andrés Ramírez',
-    ];
-    await _ref.read(memberRepositoryProvider).insertMany(demoNames);
-    _ref.invalidate(membersProvider);
-    _ref.invalidate(currentWeekStatusProvider);
-    _ref.invalidate(currentWeekStatsProvider);
-  }
 }
 
 final membersNotifierProvider =

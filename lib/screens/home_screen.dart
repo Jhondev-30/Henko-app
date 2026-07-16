@@ -11,7 +11,6 @@ import 'package:path_provider/path_provider.dart';
 import '../app_config.dart';
 import '../models/member.dart';
 import '../providers/home_providers.dart';
-import '../providers/members_provider.dart';
 import '../providers/payments_provider.dart';
 import '../theme/app_theme.dart';
 import '../widgets/header_stats.dart';
@@ -303,17 +302,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                   }
                   return SliverFillRemaining(
                     hasScrollBody: false,
-                    child: _EmptyState(
-                      onAdd: _openAddMember,
-                      onSeed: () async {
-                        await ref
-                            .read(membersNotifierProvider.notifier)
-                            .seedDemoData();
-                        if (mounted) {
-                          _snack('✓ 8 miembros de prueba agregados');
-                        }
-                      },
-                    ),
+                    child: _EmptyState(onAdd: _openAddMember),
                   );
                 }
                 return SliverPadding(
@@ -450,8 +439,7 @@ class _NoSearchResults extends StatelessWidget {
 
 class _EmptyState extends StatelessWidget {
   final VoidCallback onAdd;
-  final VoidCallback onSeed;
-  const _EmptyState({required this.onAdd, required this.onSeed});
+  const _EmptyState({required this.onAdd});
 
   @override
   Widget build(BuildContext context) {
@@ -487,12 +475,6 @@ class _EmptyState extends StatelessWidget {
               onPressed: onAdd,
               icon: const Icon(Icons.add),
               label: const Text('Agregar primer miembro'),
-            ),
-            const SizedBox(height: 8),
-            TextButton.icon(
-              onPressed: onSeed,
-              icon: const Icon(Icons.science_outlined, size: 18),
-              label: const Text('Cargar 8 miembros de prueba'),
             ),
           ],
         ),

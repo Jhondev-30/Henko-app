@@ -141,25 +141,8 @@ class InMemoryStore {
   }
 
   /// Inserta varios miembros ficticios para probar la app en web.
+  /// NOTA: solo se usa en development. No se llama en producción.
   void seedDemo() {
-    final names = [
-      'María Rodríguez',
-      'Carlos Méndez',
-      'Ana Lucía Pérez',
-      'Diego Hernández',
-      'Sofía Castillo',
-      'Luis Torres',
-      'Valentina Gómez',
-      'Andrés Ramírez',
-    ];
-    final now = DateTime.now();
-    for (final n in names) {
-      _members.add(Member(
-        id: _nextMemberId++,
-        name: n,
-        createdAt: now,
-        active: true,
-      ));
-    }
+    // Vacío en producción — el admin agrega miembros manualmente.
   }
 }
