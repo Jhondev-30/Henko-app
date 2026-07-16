@@ -1,0 +1,69 @@
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+
+import '../models/member.dart';
+import 'payments_provider.dart';
+import 'repositories_provider.dart';
+
+/// Lista de miembros activos. Recargar después de CUD.
+final membersProvider = FutureProvider<List<Member>>((ref) async {
+  return ref.watch(memberRepositoryProvider).getAll();
+});
+
+/// Provider mutation helper para refrescar la lista desde cualquier lado.
+class MembersNotifier extends StateNotifier<int> {
+  final Ref _ref;
+  MembersNotifier(this._ref) : super(0);
+
+  Future<int> add(String name, {String? photoPath}) async {
+    final repo = _ref.read(memberRepositoryProvider);
+    final id = await repo.insert(Member(
+      name: name.trim(),
+      createdAt: DateTime.now(),
+      photoPath: photoPath,
+    ));
+    _ref.invalidate(membersProvider);
+    _ref.invalidate(currentWeekStatusProvider);
+    _ref.invalidate(currentWeekStatsProvider);
+    state = id;
+    return id;
+  }
+
+  Future<void> rename(int id, String newName) async {
+    final repo = _ref.read(memberRepositoryProvider);
+    final m = await repo.getById(id);
+    if (m == null) return;
+    await repo.update(m.copyWith(name: newName.trim()));
+    _ref.invalidate(membersProvider);
+  }
+
+  Future<void> softDelete(int id) async {
+    final repo = _ref.read(memberRepositoryProvider);
+    await repo.softDelete(id);
+    _ref.invalidate(membersProvider);
+    _ref.invalidate(currentWeekStatusProvider);
+    _ref.invalidate(currentWeekStatsProvider);
+  }
+
+  /// Inserta un set de miembros ficticios para probar la app.
+  Future<void> seedDemoData() async {
+    final demoNames = [
+      'María Rodríguez',
+      'Carlos Méndez',
+      'Ana Lucía Pérez',
+      'Diego Hernández',
+      'Sofía Castillo',
+      'Luis Torres',
+      'Valentina Gómez',
+      'Andrés Ramírez',
+    ];
+    await _ref.read(memberRepositoryProvider).insertMany(demoNames);
+    _ref.invalidate(membersProvider);
+    _ref.invalidate(currentWeekStatusProvider);
+    _ref.invalidate(currentWeekStatsProvider);
+  }
+}
+
+final membersNotifierProvider =
+    StateNotifierProvider<MembersNotifier, int>((ref) {
+  return MembersNotifier(ref);
+});
