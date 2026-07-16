@@ -78,8 +78,7 @@ henko_app/
 ├── assets/
 │   └── henko_logo.png                  # Logo de bailarina
 └── android/
-    ├── app/src/main/res/mipmap-*/      # Iconos Android (5 densidades)
-    └── key.properties                  # (gitignored) credenciales keystore
+    └── app/src/main/res/mipmap-*/      # Iconos Android (5 densidades)
 ```
 
 ---
@@ -189,29 +188,6 @@ static const int historyWeeksBack = 8;   # Semanas en el selector
 - `brandSecondary` (default `#1D3557` navy)
 - Spacing tokens: `s1`-`s12`
 - Radius tokens: `rSm`-`rFull`
-
----
-
-## 🌐 Subir a GitHub
-
-```powershell
-cd C:\Users\User\Documents\henko
-git init
-git add .
-git commit -m "Initial commit - Henko v1.0"
-git branch -M main
-git remote add origin https://github.com/TU_USUARIO/henko-app.git
-git push -u origin main
-```
-
-### Release en GitHub con el APK
-
-1. Andá a tu repo → **Releases** → **Create a new release**
-2. Tag: `v1.0.0`
-3. Adjuntá `build/app/outputs/flutter-apk/app-release.apk`
-4. Publish
-
-Link compartible: `https://github.com/TU_USUARIO/henko-app/releases/tag/v1.0.0`
 
 ---
 
