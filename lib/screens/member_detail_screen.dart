@@ -9,7 +9,6 @@ import 'package:intl/intl.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 
-import '../app_config.dart';
 import '../models/member.dart';
 import '../models/payment.dart';
 import '../providers/members_provider.dart';
@@ -154,7 +153,7 @@ class _MemberDetailScreenState extends ConsumerState<MemberDetailScreen> {
       if (!mounted) return;
       final hasCap = (existing.screenshotPath != null &&
           existing.screenshotPath!.isNotEmpty);
-      final confirm = await PayActionSheet.showForUnmarking(
+      final confirm = await PaySheet.showForUnmarking(
         context,
         memberName: widget.member.name,
         hasCapture: hasCap,
@@ -162,9 +161,10 @@ class _MemberDetailScreenState extends ConsumerState<MemberDetailScreen> {
       if (!confirm) return;
       if (!mounted) return;
       try {
+        final weekStart = ref.read(selectedWeekStartProvider);
         await ref
             .read(paymentsNotifierProvider.notifier)
-            .unmarkPaid(memberId);
+            .unmarkPaid(memberId, weekStart);
         if (mounted) _snack('Pago desmarcado');
       } catch (e) {
         if (mounted) _snack('Error: $e', isError: true);
@@ -173,27 +173,30 @@ class _MemberDetailScreenState extends ConsumerState<MemberDetailScreen> {
     }
 
     if (!mounted) return;
-    final action = await PayActionSheet.showForMarking(
-        context, widget.member);
-    if (action == PayAction.cancel) return;
-    if (!mounted) return;
-
-    String? screenshotPath;
-    if (action == PayAction.withCapture) {
-      screenshotPath = await _pickImage();
-      if (screenshotPath == null) return;
-    }
+    final weekStart = ref.read(selectedWeekStartProvider);
+    final result = await PaySheet.showForMarking(
+      context,
+      ref,
+      member: widget.member,
+      pickImage: _pickImage,
+      initialWeekStart: weekStart,
+    );
+    if (result == null) return;
     if (!mounted) return;
     try {
       await ref.read(paymentsNotifierProvider.notifier).markPaid(
             memberId: memberId,
-            amount: AppConfig.weeklyFee,
-            screenshotPath: screenshotPath,
+            amount: result.amount,
+            weekStart: result.weekStart,
+            classesAttended: result.classesAttended,
+            weeksCovered: result.weeksCovered,
+            screenshotPath: result.screenshotPath,
           );
       if (mounted) {
-        _snack(screenshotPath != null
-            ? '✓ Pagado con captura'
-            : '✓ Pagado');
+        final msg = result.weeksCovered > 1
+            ? '✓ Pagado · cubre ${result.weeksCovered} semanas'
+            : (result.withCapture ? '✓ Pagado con captura' : '✓ Pagado');
+        _snack(msg);
       }
     } catch (e) {
       if (mounted) _snack('Error: $e', isError: true);

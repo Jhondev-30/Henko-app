@@ -2,9 +2,13 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../providers/payments_provider.dart';
+import '../theme/app_theme.dart';
 import '../utils/week_calculator.dart';
+import 'reminder_sheet.dart';
 
 /// Header sticky con stats de la semana SELECCIONADA.
+/// El selector es un datepicker: tocá la fecha para elegir cualquier
+/// semana (pasada o futura, sin límite).
 class HeaderStats extends ConsumerWidget {
   const HeaderStats({super.key});
 
@@ -34,72 +38,62 @@ class HeaderStats extends ConsumerWidget {
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.center,
           children: [
-            // Selector de semana con flechas ‹ ›.
-            Row(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                IconButton(
-                  visualDensity: VisualDensity.compact,
-                  padding: EdgeInsets.zero,
-                  constraints: const BoxConstraints(
-                    minWidth: 36,
-                    minHeight: 36,
-                  ),
-                  icon: const Icon(Icons.chevron_left, color: Colors.white),
-                  onPressed: () {
-                    ref.read(selectedWeekStartProvider.notifier).state =
-                        selectedWeek.subtract(const Duration(days: 7));
-                  },
-                ),
-                Flexible(
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Text(
-                        isCurrent
-                            ? 'Semana actual'
-                            : 'Semana pasada',
-                        style: TextStyle(
-                          color: Colors.white.withValues(alpha: 0.9),
-                          fontSize: 11,
-                          fontWeight: FontWeight.w500,
-                          letterSpacing: 0.5,
-                        ),
-                      ),
-                      const SizedBox(height: 1),
-                      FittedBox(
-                        fit: BoxFit.scaleDown,
-                        child: Text(
-                          WeekCalculator.label(
-                            selectedWeek,
-                            WeekCalculator.weekEnd(selectedWeek),
+            // Selector de semana: datepicker.
+            InkWell(
+              onTap: () => _pickWeek(context, ref, selectedWeek),
+              borderRadius: BorderRadius.circular(AppTheme.rMd),
+              child: Padding(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Icon(Icons.calendar_today_rounded,
+                        color: Colors.white.withValues(alpha: 0.9), size: 14),
+                    const SizedBox(width: 8),
+                    Flexible(
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Text(
+                            isCurrent
+                                ? 'Semana actual'
+                                : (selectedWeek.isAfter(WeekCalculator
+                                        .currentWeekStart())
+                                    ? 'Semana futura'
+                                    : 'Semana pasada'),
+                            style: TextStyle(
+                              color: Colors.white.withValues(alpha: 0.9),
+                              fontSize: 11,
+                              fontWeight: FontWeight.w500,
+                              letterSpacing: 0.5,
+                            ),
                           ),
-                          style: const TextStyle(
-                            color: Colors.white,
-                            fontSize: 13,
-                            fontWeight: FontWeight.w700,
+                          const SizedBox(height: 1),
+                          FittedBox(
+                            fit: BoxFit.scaleDown,
+                            child: Text(
+                              WeekCalculator.label(
+                                selectedWeek,
+                                WeekCalculator.weekEnd(selectedWeek),
+                              ),
+                              style: const TextStyle(
+                                color: Colors.white,
+                                fontSize: 13,
+                                fontWeight: FontWeight.w700,
+                              ),
+                            ),
                           ),
-                        ),
+                        ],
                       ),
-                    ],
-                  ),
+                    ),
+                    const SizedBox(width: 8),
+                    Icon(Icons.edit_calendar_rounded,
+                        color: Colors.white.withValues(alpha: 0.9), size: 14),
+                  ],
                 ),
-                IconButton(
-                  visualDensity: VisualDensity.compact,
-                  padding: EdgeInsets.zero,
-                  constraints: const BoxConstraints(
-                    minWidth: 36,
-                    minHeight: 36,
-                  ),
-                  icon: const Icon(Icons.chevron_right, color: Colors.white),
-                  onPressed: isCurrent
-                      ? null
-                      : () {
-                          ref.read(selectedWeekStartProvider.notifier).state =
-                              selectedWeek.add(const Duration(days: 7));
-                        },
-                ),
-              ],
+              ),
             ),
             const SizedBox(height: 6),
             // 3 stat cards
@@ -152,6 +146,23 @@ class HeaderStats extends ConsumerWidget {
         ),
       ),
     );
+  }
+
+  Future<void> _pickWeek(
+      BuildContext context, WidgetRef ref, DateTime current) async {
+    final picked = await showDatePicker(
+      context: context,
+      initialDate: current,
+      firstDate: DateTime(2020, 1, 1),
+      lastDate: DateTime(2035, 12, 31),
+      helpText: 'Elegir semana',
+      cancelText: 'Cancelar',
+      confirmText: 'Ir',
+    );
+    if (picked != null) {
+      ref.read(selectedWeekStartProvider.notifier).state =
+          WeekCalculator.weekStart(picked);
+    }
   }
 
   String _formatMoney(double v) => '\$${v.toStringAsFixed(2)}';

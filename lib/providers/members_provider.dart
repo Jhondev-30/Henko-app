@@ -1,12 +1,18 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../data/default_members.dart';
 import '../models/member.dart';
 import 'payments_provider.dart';
 import 'repositories_provider.dart';
 
 /// Lista de miembros activos. Recargar después de CUD.
 final membersProvider = FutureProvider<List<Member>>((ref) async {
-  return ref.watch(memberRepositoryProvider).getAll();
+  final repo = ref.watch(memberRepositoryProvider);
+  // Bootstrap idempotente: usa INSERT OR IGNORE en SQL (DB v4+) para
+  // que múltiples ejecuciones concurrentes del provider NO generen
+  // duplicados. Es seguro llamarlo cada vez que se monta el provider.
+  await repo.insertManyIfMissing(kDefaultMemberNames);
+  return repo.getAll();
 });
 
 /// Provider mutation helper para refrescar la lista desde cualquier lado.

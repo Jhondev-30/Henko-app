@@ -1,8 +1,7 @@
-/// Constantes globales de la app Henko.
+/// Constantes globales de la app Henko. Las tarifas se leen
+/// dinámicamente desde [AppSettings] (DB). Acá solo van cosas
+/// estáticas que no cambian.
 class AppConfig {
-  /// Cuota semanal fija por miembro (en USD).
-  static const double weeklyFee = 1.75;
-
   /// AppBar title / brand.
   static const String appName = 'Henko';
 

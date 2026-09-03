@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../app_config.dart';
 import '../providers/members_provider.dart';
 import '../providers/payments_provider.dart';
+import '../providers/settings_provider.dart';
 import '../theme/app_theme.dart';
 import '../utils/currency_formatter.dart';
 import '../utils/week_calculator.dart';
@@ -30,6 +31,11 @@ class _WeekHistoryScreenState extends ConsumerState<WeekHistoryScreen> {
       _selectedWeekStart =
           _selectedWeekStart.add(Duration(days: 7 * deltaWeeks));
     });
+  }
+
+  double _defaultFee() {
+    final s = ref.watch(settingsSyncProvider);
+    return s.feeTees.isNotEmpty ? s.feeTees.first.amount : 2.5;
   }
 
   @override
@@ -133,7 +139,7 @@ class _WeekHistoryScreenState extends ConsumerState<WeekHistoryScreen> {
                                     label: 'Recaudado',
                                     value: CurrencyFormatter.format(total),
                                     sub:
-                                        'esperado ${CurrencyFormatter.format(members.length * AppConfig.weeklyFee)}',
+                                        'esperado ${CurrencyFormatter.format(members.length * _defaultFee())}',
                                     color: AppTheme.brandSecondary),
                                 Container(
                                     width: 1,

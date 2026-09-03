@@ -4,6 +4,7 @@
 
 import '../models/member.dart';
 import '../models/payment.dart';
+import 'settings_repository.dart';
 
 /// Store global en memoria (web-only).
 class InMemoryStore {
@@ -14,6 +15,7 @@ class InMemoryStore {
   final List<Payment> _payments = [];
   int _nextMemberId = 1;
   int _nextPaymentId = 1;
+  AppSettings _settings = AppSettings.defaults();
 
   // ── Members ──
   List<Member> membersAll({bool activeOnly = true}) {
@@ -45,7 +47,6 @@ class InMemoryStore {
   Future<void> memberUpdatePhoto(int id, String? path) async {
     final i = _members.indexWhere((m) => m.id == id);
     if (i >= 0) {
-      // Mismo motivo: copyWith con `??` no permite poner null.
       final old = _members[i];
       _members[i] = Member(
         id: old.id,
@@ -64,9 +65,16 @@ class InMemoryStore {
     }
   }
 
+  // ── Settings ──
+  AppSettings getSettings() => _settings;
+  void setSettings(AppSettings s) {
+    _settings = s;
+  }
+
   // ── Payments ──
+  /// Pagos cuyo rango de semanas cubiertas incluye [weekStart].
   List<Payment> paymentsForWeek(DateTime weekStart) {
-    return _payments.where((p) => p.weekStart == weekStart).toList();
+    return _payments.where((p) => p.coversWeek(weekStart)).toList();
   }
 
   Payment? paymentForMemberWeek(int memberId, DateTime weekStart) {
@@ -76,14 +84,27 @@ class InMemoryStore {
     return null;
   }
 
+  /// Pagos que cubren al menos una semana >= [memberId, ...].
   List<Payment> paymentsForMember(int memberId) {
     final list =
-        _payments.where((p) => p.memberId == memberId).toList();
+        _members.where((m) => m.id == memberId).toList();
+    if (list.isEmpty) return const [];
+    final pid = list.first.id!;
+    final memberPayments = _payments.where((p) => p.memberId == pid).toList();
+    memberPayments.sort((a, b) => b.weekStart.compareTo(a.weekStart));
+    return memberPayments;
+  }
+
+  /// Todos los pagos de un miembro (sin filtro por rango).
+  List<Payment> allPaymentsForMember(int memberId) {
+    final list = _payments.where((p) => p.memberId == memberId).toList();
     list.sort((a, b) => b.weekStart.compareTo(a.weekStart));
     return list;
   }
 
   Future<int> paymentUpsert(Payment p) async {
+    // Si ya existe un pago que cubre la misma (memberId, weekStart)
+    // inicial, lo actualizamos. Si no, lo insertamos.
     final i = _payments.indexWhere(
       (x) => x.memberId == p.memberId && x.weekStart == p.weekStart,
     );
@@ -98,6 +119,8 @@ class InMemoryStore {
       weekStart: p.weekStart,
       weekEnd: p.weekEnd,
       amount: p.amount,
+      classesAttended: p.classesAttended,
+      weeksCovered: p.weeksCovered,
       screenshotPath: p.screenshotPath,
       paidAt: p.paidAt,
       note: p.note,
@@ -114,8 +137,6 @@ class InMemoryStore {
   Future<void> paymentSetScreenshot(int id, String? path) async {
     final i = _payments.indexWhere((p) => p.id == id);
     if (i >= 0) {
-      // Re-creamos el Payment manualmente porque copyWith con `??` no
-      // puede sobrescribir un valor con `null` — siempre mantiene el viejo.
       final old = _payments[i];
       _payments[i] = Payment(
         id: old.id,
@@ -123,6 +144,8 @@ class InMemoryStore {
         weekStart: old.weekStart,
         weekEnd: old.weekEnd,
         amount: old.amount,
+        classesAttended: old.classesAttended,
+        weeksCovered: old.weeksCovered,
         paidAt: old.paidAt,
         note: old.note,
         screenshotPath: path,
@@ -132,17 +155,37 @@ class InMemoryStore {
 
   double totalForWeek(DateTime weekStart) {
     return _payments
-        .where((p) => p.weekStart == weekStart)
-        .fold<double>(0, (acc, p) => acc + p.amount);
+        .where((p) => p.coversWeek(weekStart))
+        .fold<double>(0, (acc, p) {
+      // Para el total de la semana, solo contar la fracción del pago
+      // que corresponde a esa semana. Pero como un pago cubre N
+      // semanas, lo más simple es: si el pago cubre esta semana, sumar
+      // amount / weeksCovered. Para el total real del admin, esto es
+      // más fiel.
+      final perWeek = p.weeksCovered > 0 ? p.amount / p.weeksCovered : 0;
+      return acc + perWeek;
+    });
   }
 
   int countForWeek(DateTime weekStart) {
-    return _payments.where((p) => p.weekStart == weekStart).length;
+    return _payments.where((p) => p.coversWeek(weekStart)).length;
   }
 
-  /// Inserta varios miembros ficticios para probar la app en web.
-  /// NOTA: solo se usa en development. No se llama en producción.
-  void seedDemo() {
-    // Vacío en producción — el admin agrega miembros manualmente.
+  /// Inserta los integrantes del Grupo Henko que falten en la lista
+  /// (case-insensitive). Idempotente: si ya están todos, no hace nada.
+  void seedDefaultsIfMissing(List<String> names) {
+    final existing =
+        _members.map((m) => m.name.toLowerCase().trim()).toSet();
+    final now = DateTime.now();
+    for (final n in names) {
+      if (existing.contains(n.toLowerCase().trim())) continue;
+      _members.add(Member(
+        id: _nextMemberId++,
+        name: n,
+        createdAt: now,
+        active: true,
+        photoPath: null,
+      ));
+    }
   }
 }

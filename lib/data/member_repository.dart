@@ -126,4 +126,29 @@ class MemberRepository {
     }
     await batch.commit(noResult: true);
   }
+
+  /// Versión idempotente de insertMany: usa INSERT OR IGNORE para que
+  /// múltiples llamadas concurrentes no generen duplicados. Requiere el
+  /// UNIQUE INDEX idx_members_name_unique en members.name (DB v4+).
+  ///
+  /// Si el nombre ya existe (case-insensitive), se ignora silenciosamente.
+  Future<void> insertManyIfMissing(List<String> names) async {
+    if (AppDatabase.isWeb) {
+      InMemoryStore.instance.seedDefaultsIfMissing(names);
+      return;
+    }
+    final db = await _db.database;
+    final batch = db.batch();
+    final now = DateTime.now().millisecondsSinceEpoch;
+    for (final name in names) {
+      batch.rawInsert(
+        '''
+        INSERT OR IGNORE INTO members (name, created_at, active)
+        VALUES (?, ?, 1)
+        ''',
+        [name, now],
+      );
+    }
+    await batch.commit(noResult: true);
+  }
 }

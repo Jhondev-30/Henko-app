@@ -9,16 +9,21 @@ import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 
 import '../app_config.dart';
+import '../data/default_members.dart';
+import '../data/in_memory_store.dart';
 import '../models/member.dart';
 import '../providers/home_providers.dart';
+import '../providers/members_provider.dart';
 import '../providers/payments_provider.dart';
 import '../theme/app_theme.dart';
 import '../widgets/header_stats.dart';
 import '../widgets/member_tile.dart';
 import '../widgets/pay_sheet.dart';
+import '../widgets/reminder_sheet.dart';
 import '../widgets/shimmer.dart';
 import 'add_member_screen.dart';
 import 'member_detail_screen.dart';
+import 'settings_screen.dart';
 import 'week_history_screen.dart';
 
 class HomeScreen extends ConsumerStatefulWidget {
@@ -32,6 +37,22 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   final _picker = ImagePicker();
   bool _searchActive = false;
   String _searchQuery = '';
+
+  @override
+  void initState() {
+    super.initState();
+    // Bootstrap web: en el navegador no hay SQLite, así que la lista
+    // vive en InMemoryStore. Si está vacía, sembramos los integrantes
+    // del Grupo Henko. En Android el bootstrap lo hace membersProvider.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      try {
+        InMemoryStore.instance.seedDefaultsIfMissing(kDefaultMemberNames);
+      } catch (_) {/* ignore: web-only bootstrap */}
+      ref.invalidate(membersProvider);
+      ref.invalidate(membersWithStatusProvider);
+      ref.invalidate(currentWeekStatsProvider);
+    });
+  }
 
   // ── Pickers ────────────────────────────────────────────────────────
 
@@ -114,7 +135,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
       if (!mounted) return;
       final hasCap = (existing.screenshotPath != null &&
           existing.screenshotPath!.isNotEmpty);
-      final confirm = await PayActionSheet.showForUnmarking(
+      final confirm = await PaySheet.showForUnmarking(
         context,
         memberName: memberName,
         hasCapture: hasCap,
@@ -122,9 +143,10 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
       if (!confirm) return;
       if (!mounted) return;
       try {
+        final weekStart = ref.read(selectedWeekStartProvider);
         await ref
             .read(paymentsNotifierProvider.notifier)
-            .unmarkPaid(memberId);
+            .unmarkPaid(memberId, weekStart);
         if (mounted) _snack('Pago desmarcado');
       } catch (e) {
         if (mounted) _snack('Error: $e', isError: true);
@@ -134,26 +156,31 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
 
     // NO está pagado → mostrar sheet con opciones.
     if (!mounted) return;
-    final action = await PayActionSheet.showForMarking(context, member);
-    if (action == PayAction.cancel) return;
-    if (!mounted) return;
-
-    String? screenshotPath;
-    if (action == PayAction.withCapture) {
-      screenshotPath = await _pickImage(context);
-      if (screenshotPath == null) return;
-    }
+    final weekStart = ref.read(selectedWeekStartProvider);
+    final result = await PaySheet.showForMarking(
+      context,
+      ref,
+      member: member,
+      pickImage: () => _pickImage(context),
+      initialWeekStart: weekStart,
+    );
+    // null = sheet descartado (tap afuera o back). NO marcar como pagado.
+    if (result == null) return;
     if (!mounted) return;
     try {
       await ref.read(paymentsNotifierProvider.notifier).markPaid(
             memberId: memberId,
-            amount: AppConfig.weeklyFee,
-            screenshotPath: screenshotPath,
+            amount: result.amount,
+            weekStart: result.weekStart,
+            classesAttended: result.classesAttended,
+            weeksCovered: result.weeksCovered,
+            screenshotPath: result.screenshotPath,
           );
       if (mounted) {
-        _snack(screenshotPath != null
-            ? '✓ Pagado con captura'
-            : '✓ Pagado');
+        final msg = result.weeksCovered > 1
+            ? '✓ Pagado · cubre ${result.weeksCovered} semanas'
+            : (result.withCapture ? '✓ Pagado con captura' : '✓ Pagado');
+        _snack(msg);
       }
     } catch (e) {
       if (mounted) _snack('Error: $e', isError: true);
@@ -180,6 +207,15 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
       context,
       MaterialPageRoute(builder: (_) => const AddMemberScreen()),
     );
+  }
+
+  Future<void> _openReminder() async {
+    ref.invalidate(currentWeekPaymentsProvider);
+    ref.invalidate(currentWeekStatsProvider);
+    ref.invalidate(membersWithStatusProvider);
+    await ref.read(membersWithStatusProvider.future);
+    if (!mounted) return;
+    await ReminderSheet.show(context, ref);
   }
 
   @override
@@ -248,6 +284,18 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                 collapseMode: CollapseMode.pin,
               ),
               actions: [
+                IconButton(
+                  tooltip: 'Configuración',
+                  icon: const Icon(Icons.settings_rounded),
+                  onPressed: () {
+                    Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                        builder: (_) => const SettingsScreen(),
+                      ),
+                    );
+                  },
+                ),
                 IconButton(
                   tooltip: _searchActive ? 'Cerrar búsqueda' : 'Buscar',
                   icon: Icon(_searchActive
@@ -344,10 +392,28 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
           ],
         ),
       ),
-      floatingActionButton: FloatingActionButton.extended(
-        onPressed: _openAddMember,
-        icon: const Icon(Icons.person_add_alt_1_rounded),
-        label: const Text('Agregar'),
+      floatingActionButton: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.end,
+        children: [
+          // Mini FAB: recordatorio (arriba del de Agregar).
+          FloatingActionButton.small(
+            heroTag: 'fab-reminder',
+            tooltip: 'Enviar recordatorio por WhatsApp',
+            backgroundColor: const Color(0xFF25D366),
+            foregroundColor: Colors.white,
+            onPressed: _openReminder,
+            child: const Icon(Icons.campaign_rounded),
+          ),
+          const SizedBox(height: 12),
+          // FAB principal: agregar miembro.
+          FloatingActionButton.extended(
+            heroTag: 'fab-add',
+            onPressed: _openAddMember,
+            icon: const Icon(Icons.person_add_alt_1_rounded),
+            label: const Text('Agregar'),
+          ),
+        ],
       ),
     );
   }
