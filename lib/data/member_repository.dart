@@ -127,13 +127,15 @@ class MemberRepository {
     await batch.commit(noResult: true);
   }
 
-  /// Versión idempotente de insertMany: usa UPSERT para que múltiples
-  /// llamadas concurrentes no generen duplicados. Requiere el
-  /// UNIQUE INDEX idx_members_name_unique en members.name (DB v4+).
+  /// Versión idempotente de insertMany: usa `INSERT OR IGNORE` para que
+  /// múltiples llamadas no generen duplicados. Requiere el UNIQUE INDEX
+  /// `idx_members_name_unique` en members.name (DB v4+).
   ///
-  /// Si el nombre ya existe (case-insensitive), **re-activa** el miembro
-  /// (active=1). Esto permite volver a agregar a alguien que fue borrado
-  /// por error sin perder el historial.
+  /// Si el nombre ya existe (case-insensitive), **se ignora** sin
+  /// modificar nada — incluyendo el flag `active`. Esto es crítico:
+  /// si un miembro fue soft-deleted, NO debe reactivarse al re-bootstrapeo
+  /// de la lista default. Para reactivar explícitamente, usar
+  /// [insertOrReactivate].
   Future<void> insertManyIfMissing(List<String> names) async {
     if (AppDatabase.isWeb) {
       InMemoryStore.instance.seedDefaultsIfMissing(names);
@@ -145,11 +147,8 @@ class MemberRepository {
     for (final name in names) {
       batch.rawInsert(
         '''
-        INSERT INTO members (name, created_at, active)
+        INSERT OR IGNORE INTO members (name, created_at, active)
         VALUES (?, ?, 1)
-        ON CONFLICT(name) DO UPDATE SET
-          active = 1,
-          photo_path = COALESCE(excluded.photo_path, members.photo_path)
         ''',
         [name, now],
       );

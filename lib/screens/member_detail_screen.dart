@@ -954,8 +954,25 @@ class _AttendanceEditor extends StatelessWidget {
             final week = entry.value;
             final taken = payment.classesTakenIn(week);
             final isLastWeek = idx == weeks.length - 1;
-            final canMoveNext =
-                !isLastWeek && taken > 0;
+            final canMoveNext = !isLastWeek && taken > 0;
+            // Crédito restante en TODO el pago (después de tomar en cuenta
+            // esta semana). Si es 0, el botón + queda deshabilitado.
+            final int totalTakenElsewhere;
+            if (payment.attendance.isEmpty) {
+              // Si attendance está vacío, el editor aún no fue tocado.
+              // No bloqueamos el + por esto.
+              totalTakenElsewhere = 0;
+            } else {
+              int sum = 0;
+              for (var i = 0; i < weeks.length; i++) {
+                final w = weeks[i];
+                if (w.isAtSameMomentAs(week)) continue;
+                sum += payment.classesTakenIn(w);
+              }
+              totalTakenElsewhere = sum;
+            }
+            final canIncrease =
+                totalTakenElsewhere + taken < payment.classesCount;
             return Padding(
               padding: const EdgeInsets.only(bottom: 6),
               child: Row(
@@ -1014,7 +1031,8 @@ class _AttendanceEditor extends StatelessWidget {
                       padding: EdgeInsets.zero,
                       minimumSize: const Size(28, 28),
                     ),
-                    onPressed: () => onUpdate(week, taken + 1),
+                    onPressed:
+                        canIncrease ? () => onUpdate(week, taken + 1) : null,
                   ),
                   // Botón "mover a próxima semana"
                   if (canMoveNext) ...[

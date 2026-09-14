@@ -277,11 +277,17 @@ class _PaySheetBodyState extends ConsumerState<_PaySheetBody> {
       );
       return;
     }
+    // Asistencia inicial = min(cpw, classesCount). Es decir, la
+    // persona tomó el equivalente a una semana completa (cpw) la
+    // primera semana. Esto evita que el editor muestre un número
+    // gigante cuando el admin eligió "8 clases pagadas".
+    final cpw = widget.settings.defaultClassesPerWeek;
+    final initialAttended = cpw > 0 && cpw < classes ? cpw : classes;
     Navigator.of(context).pop(PaySheetResult(
       classesCount: classes,
       amount: amount,
       weekStart: _weekStart,
-      classesAttended: _selectedClasses ?? classes,
+      classesAttended: initialAttended,
       screenshotPath: _screenshotPath,
       withCapture: _screenshotPath != null,
     ));
