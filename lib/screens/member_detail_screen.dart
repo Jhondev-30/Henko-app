@@ -14,6 +14,7 @@ import '../models/payment.dart';
 import '../providers/members_provider.dart';
 import '../providers/payments_provider.dart';
 import '../providers/repositories_provider.dart';
+import '../providers/settings_provider.dart';
 import '../theme/app_theme.dart';
 import '../utils/week_calculator.dart';
 import '../widgets/pay_sheet.dart';
@@ -188,14 +189,22 @@ class _MemberDetailScreenState extends ConsumerState<MemberDetailScreen> {
             memberId: memberId,
             amount: result.amount,
             weekStart: result.weekStart,
+            classesCount: result.classesCount,
             classesAttended: result.classesAttended,
-            weeksCovered: result.weeksCovered,
             screenshotPath: result.screenshotPath,
           );
       if (mounted) {
-        final msg = result.weeksCovered > 1
-            ? '✓ Pagado · cubre ${result.weeksCovered} semanas'
-            : (result.withCapture ? '✓ Pagado con captura' : '✓ Pagado');
+        final cpw = ref
+                .read(settingsProvider)
+                .valueOrNull
+                ?.defaultClassesPerWeek ??
+            2;
+        final weeks = (result.classesCount / cpw).floor().clamp(1, 999);
+        final msg = weeks > 1
+            ? '✓ Pagado · cubre $weeks semanas (${result.classesCount} clases)'
+            : (result.withCapture
+                ? '✓ Pagado con captura'
+                : '✓ Pagado');
         _snack(msg);
       }
     } catch (e) {
@@ -422,6 +431,14 @@ class _MemberDetailScreenState extends ConsumerState<MemberDetailScreen> {
                       padding: const EdgeInsets.only(bottom: 8),
                       child: _PaymentRow(
                         payment: pay,
+                        classesPerWeek: ref
+                                .watch(settingsSyncProvider)
+                                .defaultClassesPerWeek,
+                        onUpdateAttendance: (week, taken) async {
+                          await ref
+                              .read(paymentsNotifierProvider.notifier)
+                              .setAttendance(pay.id!, week, taken);
+                        },
                         onOpenScreenshot: pay.screenshotPath != null
                             ? () => _openScreenshot(pay.screenshotPath!)
                             : null,
@@ -575,6 +592,8 @@ class _PaymentRow extends StatelessWidget {
   final VoidCallback onReplaceScreenshot;
   final VoidCallback onDeleteScreenshot;
   final VoidCallback onDeletePayment;
+  final int classesPerWeek;
+  final void Function(DateTime week, int classesTaken) onUpdateAttendance;
 
   const _PaymentRow({
     required this.payment,
@@ -582,6 +601,8 @@ class _PaymentRow extends StatelessWidget {
     required this.onReplaceScreenshot,
     required this.onDeleteScreenshot,
     required this.onDeletePayment,
+    required this.classesPerWeek,
+    required this.onUpdateAttendance,
   });
 
   @override
@@ -723,6 +744,16 @@ class _PaymentRow extends StatelessWidget {
                 ],
               ),
             ),
+            // Editor de asistencia (solo si el pago cubre varias semanas)
+            if (classesPerWeek > 0 &&
+                payment.classesCount > classesPerWeek) ...[
+              const SizedBox(height: 12),
+              _AttendanceEditor(
+                payment: payment,
+                classesPerWeek: classesPerWeek,
+                onUpdate: onUpdateAttendance,
+              ),
+            ],
           ],
         ),
       ),
@@ -778,6 +809,176 @@ class _PaymentRow extends StatelessWidget {
       alignment: Alignment.center,
       child: Icon(Icons.broken_image_outlined,
           color: Colors.grey.shade500, size: 40),
+    );
+  }
+}
+
+/// Editor de asistencia: muestra cada semana cubierta por el pago
+/// y permite ajustar cuántas clases tomó la persona en cada una.
+/// Si tomó menos de las pagadas, queda "crédito" que se acumula
+/// (no se pierde: la app lo refleja en el cálculo de "Recaudado esperado").
+class _AttendanceEditor extends StatelessWidget {
+  final Payment payment;
+  final int classesPerWeek;
+  final void Function(DateTime week, int classesTaken) onUpdate;
+
+  const _AttendanceEditor({
+    required this.payment,
+    required this.classesPerWeek,
+    required this.onUpdate,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final fmt = DateFormat('d MMM', 'es');
+    final weeks = payment.coveredWeeks(classesPerWeek);
+
+    int totalTaken = 0;
+    for (final w in weeks) {
+      totalTaken += payment.classesTakenIn(w);
+    }
+    final totalPaid = payment.classesCount;
+    final diff = totalPaid - totalTaken;
+    final hasMissing = diff > 0;
+
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: scheme.surfaceContainerLow,
+        borderRadius: BorderRadius.circular(AppTheme.rMd),
+        border: Border.all(
+          color: hasMissing
+              ? AppTheme.warning.withValues(alpha: 0.4)
+              : scheme.outlineVariant,
+        ),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // Header con resumen
+          Row(
+            children: [
+              Icon(Icons.event_available_rounded,
+                  size: 18, color: scheme.primary),
+              const SizedBox(width: 6),
+              Text(
+                'Asistencia por semana',
+                style: TextStyle(
+                  fontSize: 13,
+                  fontWeight: FontWeight.w700,
+                  color: scheme.onSurface,
+                ),
+              ),
+              const Spacer(),
+              Container(
+                padding: const EdgeInsets.symmetric(
+                    horizontal: 8, vertical: 3),
+                decoration: BoxDecoration(
+                  color: hasMissing
+                      ? AppTheme.warning.withValues(alpha: 0.15)
+                      : AppTheme.success.withValues(alpha: 0.12),
+                  borderRadius: BorderRadius.circular(AppTheme.rFull),
+                ),
+                child: Text(
+                  hasMissing
+                      ? 'Faltan $diff clase${diff == 1 ? "" : "s"}'
+                      : '$totalTaken/$totalPaid clases ✓',
+                  style: TextStyle(
+                    fontSize: 11,
+                    fontWeight: FontWeight.w700,
+                    color: hasMissing
+                        ? AppTheme.warning
+                        : AppTheme.success,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 4),
+          Text(
+            hasMissing
+                ? 'La persona pagó $totalPaid clases pero solo tomó $totalTaken. Las ${diff} que faltan quedan como crédito para otra semana.'
+                : 'Pagó $totalPaid clases y tomó $totalTaken. Todo al día.',
+            style: TextStyle(
+                fontSize: 11.5, color: scheme.onSurfaceVariant),
+          ),
+          const SizedBox(height: 10),
+          // Filas de cada semana
+          ...weeks.map((week) {
+            final taken = payment.classesTakenIn(week);
+            return Padding(
+              padding: const EdgeInsets.only(bottom: 6),
+              child: Row(
+                children: [
+                  Container(
+                    width: 90,
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 8, vertical: 4),
+                    decoration: BoxDecoration(
+                      color: scheme.surfaceContainerHigh,
+                      borderRadius: BorderRadius.circular(AppTheme.rSm),
+                    ),
+                    child: Text(
+                      'Sem ${fmt.format(week)}',
+                      style: TextStyle(
+                        fontSize: 11,
+                        fontWeight: FontWeight.w600,
+                        color: scheme.onSurface,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  IconButton(
+                    icon: const Icon(Icons.remove_rounded, size: 16),
+                    visualDensity: VisualDensity.compact,
+                    style: IconButton.styleFrom(
+                      backgroundColor: scheme.surfaceContainerHigh,
+                      padding: EdgeInsets.zero,
+                      minimumSize: const Size(28, 28),
+                    ),
+                    onPressed: taken > 0
+                        ? () => onUpdate(week, taken - 1)
+                        : null,
+                  ),
+                  const SizedBox(width: 4),
+                  Container(
+                    constraints: const BoxConstraints(minWidth: 24),
+                    child: Text(
+                      '$taken',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                        fontSize: 14,
+                        fontWeight: FontWeight.w800,
+                        color: taken >= classesPerWeek
+                            ? AppTheme.success
+                            : AppTheme.warning,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 4),
+                  IconButton(
+                    icon: const Icon(Icons.add_rounded, size: 16),
+                    visualDensity: VisualDensity.compact,
+                    style: IconButton.styleFrom(
+                      backgroundColor: scheme.surfaceContainerHigh,
+                      padding: EdgeInsets.zero,
+                      minimumSize: const Size(28, 28),
+                    ),
+                    onPressed: () => onUpdate(week, taken + 1),
+                  ),
+                  const Spacer(),
+                  Text(
+                    '/ $classesPerWeek esperadas',
+                    style: TextStyle(
+                        fontSize: 10, color: scheme.onSurfaceVariant),
+                  ),
+                ],
+              ),
+            );
+          }),
+        ],
+      ),
     );
   }
 }

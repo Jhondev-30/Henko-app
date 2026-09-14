@@ -72,9 +72,10 @@ class InMemoryStore {
   }
 
   // ── Payments ──
-  /// Pagos cuyo rango de semanas cubiertas incluye [weekStart].
-  List<Payment> paymentsForWeek(DateTime weekStart) {
-    return _payments.where((p) => p.coversWeek(weekStart)).toList();
+  List<Payment> paymentsForWeek(DateTime weekStart, int classesPerWeek) {
+    return _payments
+        .where((p) => p.coversWeek(weekStart, classesPerWeek))
+        .toList();
   }
 
   Payment? paymentForMemberWeek(int memberId, DateTime weekStart) {
@@ -84,18 +85,6 @@ class InMemoryStore {
     return null;
   }
 
-  /// Pagos que cubren al menos una semana >= [memberId, ...].
-  List<Payment> paymentsForMember(int memberId) {
-    final list =
-        _members.where((m) => m.id == memberId).toList();
-    if (list.isEmpty) return const [];
-    final pid = list.first.id!;
-    final memberPayments = _payments.where((p) => p.memberId == pid).toList();
-    memberPayments.sort((a, b) => b.weekStart.compareTo(a.weekStart));
-    return memberPayments;
-  }
-
-  /// Todos los pagos de un miembro (sin filtro por rango).
   List<Payment> allPaymentsForMember(int memberId) {
     final list = _payments.where((p) => p.memberId == memberId).toList();
     list.sort((a, b) => b.weekStart.compareTo(a.weekStart));
@@ -103,8 +92,6 @@ class InMemoryStore {
   }
 
   Future<int> paymentUpsert(Payment p) async {
-    // Si ya existe un pago que cubre la misma (memberId, weekStart)
-    // inicial, lo actualizamos. Si no, lo insertamos.
     final i = _payments.indexWhere(
       (x) => x.memberId == p.memberId && x.weekStart == p.weekStart,
     );
@@ -119,8 +106,9 @@ class InMemoryStore {
       weekStart: p.weekStart,
       weekEnd: p.weekEnd,
       amount: p.amount,
+      classesCount: p.classesCount,
       classesAttended: p.classesAttended,
-      weeksCovered: p.weeksCovered,
+      attendance: p.attendance,
       screenshotPath: p.screenshotPath,
       paidAt: p.paidAt,
       note: p.note,
@@ -144,8 +132,9 @@ class InMemoryStore {
         weekStart: old.weekStart,
         weekEnd: old.weekEnd,
         amount: old.amount,
+        classesCount: old.classesCount,
         classesAttended: old.classesAttended,
-        weeksCovered: old.weeksCovered,
+        attendance: old.attendance,
         paidAt: old.paidAt,
         note: old.note,
         screenshotPath: path,
@@ -153,26 +142,24 @@ class InMemoryStore {
     }
   }
 
-  double totalForWeek(DateTime weekStart) {
+  /// Total REAL de la semana: clases tomadas × tarifa por clase.
+  double totalForWeek(DateTime weekStart, int classesPerWeek) {
     return _payments
-        .where((p) => p.coversWeek(weekStart))
+        .where((p) => p.coversWeek(weekStart, classesPerWeek))
         .fold<double>(0, (acc, p) {
-      // Para el total de la semana, solo contar la fracción del pago
-      // que corresponde a esa semana. Pero como un pago cubre N
-      // semanas, lo más simple es: si el pago cubre esta semana, sumar
-      // amount / weeksCovered. Para el total real del admin, esto es
-      // más fiel.
-      final perWeek = p.weeksCovered > 0 ? p.amount / p.weeksCovered : 0;
-      return acc + perWeek;
+      final taken = p.classesTakenIn(weekStart);
+      final perClass =
+          p.classesCount == 0 ? 0.0 : p.amount / p.classesCount;
+      return acc + taken * perClass;
     });
   }
 
-  int countForWeek(DateTime weekStart) {
-    return _payments.where((p) => p.coversWeek(weekStart)).length;
+  int countForWeek(DateTime weekStart, int classesPerWeek) {
+    return _payments.where((p) => p.coversWeek(weekStart, classesPerWeek)).length;
   }
 
   /// Inserta los integrantes del Grupo Henko que falten en la lista
-  /// (case-insensitive). Idempotente: si ya están todos, no hace nada.
+  /// (case-insensitive). Idempotente.
   void seedDefaultsIfMissing(List<String> names) {
     final existing =
         _members.map((m) => m.name.toLowerCase().trim()).toSet();

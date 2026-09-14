@@ -1,6 +1,6 @@
-// Modelo de Pago. A partir de v1.3 un solo pago puede cubrir
-// múltiples semanas (pago adelantado) y registra cuántas clases
-// se tomaron en la semana del pago.
+// Modelo de Pago. La unidad de cuenta son CLASES, no semanas.
+// Un pago de N clases cubre N / classesPerWeek semanas.
+// Ej: 4 clases a 2 clases/sem = cubre 2 semanas.
 class Payment {
   final int? id;
   final int memberId;
@@ -12,18 +12,27 @@ class Payment {
   /// Fin de la semana del pago (domingo).
   final DateTime weekEnd;
 
-  /// Monto total pagado. Puede ser 1.5, 2.5, 4, 10, etc.
+  /// Monto total pagado en dinero. Lo que el admin recibió.
   final double amount;
 
-  /// Cantidad de clases que tomó el miembro esa semana (1, 2 o 3+).
-  /// Sirve para mostrar en el historial y para calcular el monto
-  /// esperado cuando la tarifa es por número de clases.
+  /// Total de clases que cubre este pago. Por ejemplo:
+  /// - 1 clase para una sola clase suelta
+  /// - 2 clases para una semana completa
+  /// - 4 clases para dos semanas (2 clases/sem × 2)
+  /// - 6 clases para tres semanas, etc.
+  final int classesCount;
+
+  /// Cuántas clases tomó el miembro efectivamente en la semana del pago.
+  /// Por default es igual a classesPerWeek vigente al momento del pago.
+  /// El admin puede editar esto después si la persona faltó.
   final int classesAttended;
 
-  /// Cuántas semanas cubre este pago (>= 1). Por default 1.
-  /// Si alguien paga $5 a 2 clases ($2.50/sem) → weeksCovered = 2.
-  /// Si alguien paga $10 a 1 clase ($1.50/sem) → weeksCovered = 6.
-  final int weeksCovered;
+  /// Cuántas clases tomó el miembro en cada semana cubierta.
+  /// La clave es la semana (lunes) y el valor es la cantidad de clases
+  /// que tomó en esa semana. Una clase no tomada genera "crédito"
+  /// que se descuenta del total.
+  /// Si está vacío, se asume que tomó classesPerWeek clases por semana.
+  final Map<String, int> attendance;
 
   final String? screenshotPath;
   final DateTime paidAt;
@@ -35,25 +44,44 @@ class Payment {
     required this.weekStart,
     required this.weekEnd,
     required this.amount,
-    this.classesAttended = 2,
-    this.weeksCovered = 1,
+    required this.classesCount,
+    this.classesAttended = 0,
+    this.attendance = const {},
     this.screenshotPath,
     required this.paidAt,
     this.note,
   });
 
-  /// Devuelve todas las semanas (inicio lunes) que cubre este pago.
-  /// Ej: weeksCovered=3 y weekStart=lun 5 → [lun 5, lun 12, lun 19].
-  List<DateTime> get coveredWeeks {
+  /// Devuelve las semanas (inicio lunes) que cubre este pago según
+  /// la cantidad de clases y el `classesPerWeek` dado.
+  List<DateTime> coveredWeeks(int classesPerWeek) {
+    if (classesPerWeek <= 0) return [weekStart];
+    final weeks = (classesCount / classesPerWeek).floor();
+    final n = weeks < 1 ? 1 : weeks;
     return List<DateTime>.generate(
-      weeksCovered,
+      n,
       (i) => weekStart.add(Duration(days: 7 * i)),
     );
   }
 
-  /// ¿Este pago cubre la semana dada?
-  bool coversWeek(DateTime week) {
-    return coveredWeeks.any((w) => w.isAtSameMomentAs(week));
+  /// ¿Este pago cubre la semana dada, según el classesPerWeek actual?
+  bool coversWeek(DateTime week, int classesPerWeek) {
+    return coveredWeeks(classesPerWeek).any((w) => w.isAtSameMomentAs(week));
+  }
+
+  /// Cuántas clases tomó en la semana dada (o 0 si no se especificó).
+  int classesTakenIn(DateTime week) {
+    final key = week.millisecondsSinceEpoch.toString();
+    return attendance[key] ?? classesAttended;
+  }
+
+  /// Devuelve un Payment con la asistencia de una semana específica
+  /// actualizada.
+  Payment setAttendance(DateTime week, int classesTaken) {
+    final newMap = Map<String, int>.from(attendance);
+    final key = week.millisecondsSinceEpoch.toString();
+    newMap[key] = classesTaken;
+    return copyWith(attendance: newMap);
   }
 
   Payment copyWith({
@@ -62,8 +90,9 @@ class Payment {
     DateTime? weekStart,
     DateTime? weekEnd,
     double? amount,
+    int? classesCount,
     int? classesAttended,
-    int? weeksCovered,
+    Map<String, int>? attendance,
     String? screenshotPath,
     DateTime? paidAt,
     String? note,
@@ -74,8 +103,9 @@ class Payment {
       weekStart: weekStart ?? this.weekStart,
       weekEnd: weekEnd ?? this.weekEnd,
       amount: amount ?? this.amount,
+      classesCount: classesCount ?? this.classesCount,
       classesAttended: classesAttended ?? this.classesAttended,
-      weeksCovered: weeksCovered ?? this.weeksCovered,
+      attendance: attendance ?? this.attendance,
       screenshotPath: screenshotPath ?? this.screenshotPath,
       paidAt: paidAt ?? this.paidAt,
       note: note ?? this.note,
@@ -89,8 +119,9 @@ class Payment {
       'week_start': weekStart.millisecondsSinceEpoch,
       'week_end': weekEnd.millisecondsSinceEpoch,
       'amount': amount,
+      'classes_count': classesCount,
       'classes_attended': classesAttended,
-      'weeks_covered': weeksCovered,
+      'attendance': _encodeAttendance(attendance),
       'screenshot_path': screenshotPath,
       'paid_at': paidAt.millisecondsSinceEpoch,
       'note': note,
@@ -106,11 +137,32 @@ class Payment {
       weekEnd:
           DateTime.fromMillisecondsSinceEpoch(map['week_end'] as int),
       amount: (map['amount'] as num).toDouble(),
-      classesAttended: (map['classes_attended'] as int?) ?? 2,
-      weeksCovered: (map['weeks_covered'] as int?) ?? 1,
+      classesCount: (map['classes_count'] as int?) ?? 1,
+      classesAttended: (map['classes_attended'] as int?) ?? 0,
+      attendance: _decodeAttendance(
+          map['attendance'] as String? ?? ''),
       screenshotPath: map['screenshot_path'] as String?,
       paidAt: DateTime.fromMillisecondsSinceEpoch(map['paid_at'] as int),
       note: map['note'] as String?,
     );
+  }
+
+  static String _encodeAttendance(Map<String, int> a) {
+    if (a.isEmpty) return '';
+    return a.entries.map((e) => '${e.key}:${e.value}').join(',');
+  }
+
+  static Map<String, int> _decodeAttendance(String raw) {
+    if (raw.isEmpty) return {};
+    final map = <String, int>{};
+    for (final pair in raw.split(',')) {
+      final i = pair.indexOf(':');
+      if (i > 0) {
+        final k = pair.substring(0, i);
+        final v = int.tryParse(pair.substring(i + 1));
+        if (v != null) map[k] = v;
+      }
+    }
+    return map;
   }
 }

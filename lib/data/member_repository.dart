@@ -127,11 +127,13 @@ class MemberRepository {
     await batch.commit(noResult: true);
   }
 
-  /// Versión idempotente de insertMany: usa INSERT OR IGNORE para que
-  /// múltiples llamadas concurrentes no generen duplicados. Requiere el
+  /// Versión idempotente de insertMany: usa UPSERT para que múltiples
+  /// llamadas concurrentes no generen duplicados. Requiere el
   /// UNIQUE INDEX idx_members_name_unique en members.name (DB v4+).
   ///
-  /// Si el nombre ya existe (case-insensitive), se ignora silenciosamente.
+  /// Si el nombre ya existe (case-insensitive), **re-activa** el miembro
+  /// (active=1). Esto permite volver a agregar a alguien que fue borrado
+  /// por error sin perder el historial.
   Future<void> insertManyIfMissing(List<String> names) async {
     if (AppDatabase.isWeb) {
       InMemoryStore.instance.seedDefaultsIfMissing(names);
@@ -143,12 +145,71 @@ class MemberRepository {
     for (final name in names) {
       batch.rawInsert(
         '''
-        INSERT OR IGNORE INTO members (name, created_at, active)
+        INSERT INTO members (name, created_at, active)
         VALUES (?, ?, 1)
+        ON CONFLICT(name) DO UPDATE SET
+          active = 1,
+          photo_path = COALESCE(excluded.photo_path, members.photo_path)
         ''',
         [name, now],
       );
     }
     await batch.commit(noResult: true);
+  }
+
+  /// Inserta un único miembro o lo re-activa si ya existe (incluso si
+  /// fue soft-deleted). Devuelve el ID del miembro resultante.
+  Future<int> insertOrReactivate(String name, {String? photoPath}) async {
+    if (AppDatabase.isWeb) {
+      // Buscar primero si existe para devolver id coherente.
+      final existing = InMemoryStore.instance.membersAll(activeOnly: false);
+      for (final m in existing) {
+        if (m.name.toLowerCase() == name.toLowerCase()) {
+          await InMemoryStore.instance.memberUpdatePhoto(m.id!, photoPath);
+          return m.id!;
+        }
+      }
+      return InMemoryStore.instance.memberInsert(
+        Member(name: name, createdAt: DateTime.now(), photoPath: photoPath),
+      );
+    }
+    final db = await _db.database;
+    final now = DateTime.now().millisecondsSinceEpoch;
+    // Primero intentar INSERT; si falla por UNIQUE, hacer UPDATE.
+    try {
+      return await db.insert(
+        'members',
+        {
+          'name': name,
+          'created_at': now,
+          'active': 1,
+          if (photoPath != null) 'photo_path': photoPath,
+        },
+        conflictAlgorithm: ConflictAlgorithm.abort,
+      );
+    } on DatabaseException {
+      // Ya existe (probablemente soft-deleted). Re-activar.
+      final existing = await db.query(
+        'members',
+        columns: ['id'],
+        where: 'name = ? COLLATE NOCASE',
+        whereArgs: [name],
+        limit: 1,
+      );
+      if (existing.isEmpty) {
+        rethrow;
+      }
+      final id = existing.first['id'] as int;
+      await db.update(
+        'members',
+        {
+          'active': 1,
+          if (photoPath != null) 'photo_path': photoPath,
+        },
+        where: 'id = ?',
+        whereArgs: [id],
+      );
+      return id;
+    }
   }
 }

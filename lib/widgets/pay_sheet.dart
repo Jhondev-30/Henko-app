@@ -10,35 +10,28 @@ import '../providers/settings_provider.dart';
 import '../theme/app_theme.dart';
 import '../utils/week_calculator.dart';
 
-/// Resultado del bottom sheet de pago. El parent decide si llama a
-/// markPaid o no.
+/// Resultado del bottom sheet de pago. La unidad de cuenta son CLASES.
 class PaySheetResult {
+  final int classesCount;
   final double amount;
-  final int classesAttended;
-  final int weeksCovered;
   final DateTime weekStart;
+  final int classesAttended;
   final String? screenshotPath;
   final bool withCapture;
 
   const PaySheetResult({
+    required this.classesCount,
     required this.amount,
-    required this.classesAttended,
-    required this.weeksCovered,
     required this.weekStart,
+    required this.classesAttended,
     this.screenshotPath,
     this.withCapture = false,
   });
 }
 
-/// Bottom sheet rediseñado. Permite:
-/// 1. Elegir la semana del pago (cualquier lunes, pasado o futuro).
-/// 2. Elegir cuántas clases se tomaron.
-/// 3. Ver el monto auto-calculado o escribir un monto personalizado.
-/// 4. Adjuntar una captura (opcional).
 class PaySheet {
-  /// Muestra el sheet para registrar un pago de un miembro.
-  /// Retorna `null` si el usuario descarta el sheet (tap afuera / back).
-  /// Retorna un [PaySheetResult] si el usuario confirma.
+  /// Muestra el sheet para registrar un pago. Retorna `null` si el
+  /// usuario descarta el sheet.
   static Future<PaySheetResult?> showForMarking(
     BuildContext context,
     WidgetRef ref, {
@@ -152,7 +145,8 @@ class _PaySheetBody extends ConsumerStatefulWidget {
 
 class _PaySheetBodyState extends ConsumerState<_PaySheetBody> {
   late DateTime _weekStart;
-  int? _selectedClasses; // null = monto personalizado
+  // null = modo personalizado (input libre)
+  int? _selectedClasses;
   late TextEditingController _amountController;
   late TextEditingController _customClassesController;
   String? _screenshotPath;
@@ -162,13 +156,11 @@ class _PaySheetBodyState extends ConsumerState<_PaySheetBody> {
   void initState() {
     super.initState();
     _weekStart = widget.initialWeekStart;
-    // Default: la primera tarifa configurada (usualmente 2 clases)
-    _selectedClasses =
-        widget.settings.feeTees.isNotEmpty ? widget.settings.feeTees.first.classes : 2;
-    _amountController = TextEditingController(
-      text: _calculateDefaultAmount(_selectedClasses!).toStringAsFixed(2),
-    );
+    // Default: classesPerWeek vigente
+    _selectedClasses = widget.settings.defaultClassesPerWeek;
+    _amountController = TextEditingController();
     _customClassesController = TextEditingController();
+    _recomputeAmount();
   }
 
   @override
@@ -178,31 +170,41 @@ class _PaySheetBodyState extends ConsumerState<_PaySheetBody> {
     super.dispose();
   }
 
-  double _calculateDefaultAmount(int classes) {
-    final tier = widget.settings.amountFor(classes);
-    if (tier != null) return tier;
-    // Si no hay tarifa, usar un fallback razonable
-    if (classes == 1) return 1.5;
-    if (classes == 2) return 2.5;
-    if (classes == 3) return 4.0;
-    return 1.5 * classes;
+  int _effectiveClasses() {
+    if (_selectedClasses != null) return _selectedClasses!;
+    return int.tryParse(_customClassesController.text.trim()) ?? 1;
   }
 
-  /// Calcula cuántas semanas cubre el monto actual según la tarifa
-  /// seleccionada. Si no hay match exacto, usa la tarifa de 1 clase.
-  int _calculateWeeksCovered(double amount, int? classes) {
-    if (classes == null) {
-      // Monto personalizado: dividir por la tarifa más baja
-      // disponible (asumimos 1 clase como referencia).
-      final tier = widget.settings.feeTees.isNotEmpty
-          ? widget.settings.feeTees.first
-          : const FeeTier(classes: 2, amount: 2.5);
-      if (tier.amount <= 0) return 1;
-      return (amount / tier.amount).floor().clamp(1, 999);
+  /// Recalcula el monto según la cantidad de clases y la tarifa.
+  /// Usa la regla: pares de 2-clases a tarifa de 2, individual a
+  /// tarifa de 1.
+  void _recomputeAmount() {
+    final classes = _effectiveClasses();
+    if (classes <= 0) {
+      _amountController.text = '0.00';
+      return;
     }
-    final tier = widget.settings.amountFor(classes);
-    if (tier == null || tier <= 0) return 1;
-    return (amount / tier).floor().clamp(1, 999);
+    // Si hay una tarifa exacta para la cantidad de clases, usarla
+    // (eso permite que el admin personalice el precio de "3 clases"
+    // sin que sea siempre 1.50 + 2.50).
+    final exact = widget.settings.amountFor(classes);
+    double amount;
+    if (exact != null && classes <= 3) {
+      // Para 1, 2, 3 clases usar la tarifa configurada exacta
+      amount = exact;
+    } else {
+      // Para 4+ clases, calcular según la regla de pares
+      amount = amountForClassCount(classes, widget.settings);
+    }
+    _amountController.text = amount.toStringAsFixed(2);
+  }
+
+  /// Cuántas semanas cubre el pago según el classesPerWeek vigente.
+  int _weeksCovered() {
+    final classes = _effectiveClasses();
+    final cpw = widget.settings.defaultClassesPerWeek;
+    if (cpw <= 0) return classes; // fallback
+    return (classes / cpw).floor().clamp(1, 999);
   }
 
   Future<void> _pickWeek() async {
@@ -238,9 +240,20 @@ class _PaySheetBodyState extends ConsumerState<_PaySheetBody> {
     setState(() {
       _selectedClasses = classes;
       if (classes != null) {
-        _amountController.text = _calculateDefaultAmount(classes).toStringAsFixed(2);
+        _customClassesController.clear();
       }
+      _recomputeAmount();
     });
+  }
+
+  void _onCustomClassesChanged(String value) {
+    setState(() {
+      _recomputeAmount();
+    });
+  }
+
+  void _onAmountManuallyChanged(String _) {
+    setState(() {});
   }
 
   double _parseAmount() {
@@ -250,6 +263,13 @@ class _PaySheetBodyState extends ConsumerState<_PaySheetBody> {
   }
 
   void _onConfirm() {
+    final classes = _effectiveClasses();
+    if (classes <= 0) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Ingresá una cantidad de clases válida')),
+      );
+      return;
+    }
     final amount = _parseAmount();
     if (amount <= 0) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -257,12 +277,11 @@ class _PaySheetBodyState extends ConsumerState<_PaySheetBody> {
       );
       return;
     }
-    final weeksCovered = _calculateWeeksCovered(amount, _selectedClasses);
     Navigator.of(context).pop(PaySheetResult(
+      classesCount: classes,
       amount: amount,
-      classesAttended: _selectedClasses ?? 2,
-      weeksCovered: weeksCovered,
       weekStart: _weekStart,
+      classesAttended: _selectedClasses ?? classes,
       screenshotPath: _screenshotPath,
       withCapture: _screenshotPath != null,
     ));
@@ -276,10 +295,10 @@ class _PaySheetBodyState extends ConsumerState<_PaySheetBody> {
       symbol: r'$',
       decimalDigits: 2,
     );
+    final cpw = widget.settings.defaultClassesPerWeek;
+    final classes = _effectiveClasses();
+    final weeks = classes > 0 ? _weeksCovered() : 0;
     final amount = _parseAmount();
-    final weeks = amount > 0
-        ? _calculateWeeksCovered(amount, _selectedClasses)
-        : 0;
 
     return SafeArea(
       child: Padding(
@@ -319,7 +338,7 @@ class _PaySheetBodyState extends ConsumerState<_PaySheetBody> {
                         ),
                       ),
                       Text(
-                        'Registrar pago',
+                        'Registrar pago ($cpw clases/semana por defecto)',
                         style: TextStyle(
                           fontSize: 12,
                           color: scheme.onSurfaceVariant,
@@ -368,8 +387,8 @@ class _PaySheetBodyState extends ConsumerState<_PaySheetBody> {
             ),
             const SizedBox(height: 16),
 
-            // Número de clases (chips)
-            _SectionLabel(text: 'Clases tomadas esta semana'),
+            // Cantidad de clases (chips)
+            _SectionLabel(text: 'Cantidad de clases que pagó'),
             const SizedBox(height: 8),
             Wrap(
               spacing: 8,
@@ -392,6 +411,19 @@ class _PaySheetBodyState extends ConsumerState<_PaySheetBody> {
                 ),
               ],
             ),
+            if (_selectedClasses == null) ...[
+              const SizedBox(height: 8),
+              TextField(
+                controller: _customClassesController,
+                keyboardType: TextInputType.number,
+                inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+                decoration: const InputDecoration(
+                  labelText: 'Número de clases',
+                  hintText: 'Ej: 4, 6, 8...',
+                ),
+                onChanged: _onCustomClassesChanged,
+              ),
+            ],
             const SizedBox(height: 16),
 
             // Monto
@@ -412,13 +444,13 @@ class _PaySheetBodyState extends ConsumerState<_PaySheetBody> {
                 fontSize: 20,
                 fontWeight: FontWeight.w700,
               ),
-              onChanged: (_) => setState(() {}),
+              onChanged: _onAmountManuallyChanged,
             ),
-            if (amount > 0) ...[
+            if (amount > 0 && classes > 0) ...[
               const SizedBox(height: 8),
               Container(
                 padding:
-                    const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                    const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
                 decoration: BoxDecoration(
                   color: AppTheme.success.withValues(alpha: 0.10),
                   borderRadius: BorderRadius.circular(AppTheme.rSm),
@@ -431,8 +463,8 @@ class _PaySheetBodyState extends ConsumerState<_PaySheetBody> {
                     Expanded(
                       child: Text(
                         weeks == 1
-                            ? 'Cubre 1 semana'
-                            : 'Cubre $weeks semanas seguidas',
+                            ? 'Cubre 1 semana ($classes clases)'
+                            : 'Cubre $weeks semanas ($classes clases ÷ $cpw clases/sem)',
                         style: const TextStyle(
                           color: AppTheme.success,
                           fontWeight: FontWeight.w600,
@@ -460,9 +492,6 @@ class _PaySheetBodyState extends ConsumerState<_PaySheetBody> {
                     color: _screenshotPath != null
                         ? AppTheme.success
                         : scheme.outlineVariant,
-                    style: _screenshotPath != null
-                        ? BorderStyle.solid
-                        : BorderStyle.solid,
                   ),
                   borderRadius: BorderRadius.circular(AppTheme.rMd),
                 ),
@@ -517,8 +546,8 @@ class _PaySheetBodyState extends ConsumerState<_PaySheetBody> {
               ),
               icon: const Icon(Icons.check_rounded),
               label: Text(
-                amount > 0 && weeks > 0
-                    ? 'Registrar $weeks ${weeks == 1 ? "semana" : "semanas"} · ${fmt.format(amount)}'
+                classes > 0
+                    ? 'Registrar $classes ${classes == 1 ? "clase" : "clases"} · ${fmt.format(amount)}'
                     : 'Registrar pago',
                 style: const TextStyle(
                     fontSize: 15, fontWeight: FontWeight.w700),

@@ -1,6 +1,5 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import '../data/settings_repository.dart';
 import '../models/payment.dart';
 import '../utils/week_calculator.dart';
 import 'members_provider.dart';
@@ -8,7 +7,6 @@ import 'repositories_provider.dart';
 import 'settings_provider.dart';
 
 /// Semana que está viendo el usuario en la HomeScreen.
-/// Inicia en la semana actual; se puede cambiar con el datepicker.
 final selectedWeekStartProvider = StateProvider<DateTime>((ref) {
   return WeekCalculator.currentWeekStart();
 });
@@ -19,19 +17,21 @@ final isCurrentWeekSelectedProvider = Provider<bool>((ref) {
   return selected == WeekCalculator.currentWeekStart();
 });
 
-/// Pagos que cubren la semana seleccionada.
+/// Pagos que cubren la semana seleccionada (según classesPerWeek actual).
 final currentWeekPaymentsProvider =
     FutureProvider<List<Payment>>((ref) async {
   final weekStart = ref.watch(selectedWeekStartProvider);
-  return ref.watch(paymentRepositoryProvider).getForWeek(weekStart);
+  final settings = ref.watch(settingsSyncProvider);
+  return ref
+      .watch(paymentRepositoryProvider)
+      .getForWeek(weekStart, settings.defaultClassesPerWeek);
 });
 
 /// Estado del pago (memberId -> Payment?) para la semana seleccionada.
+/// Si un miembro tiene varios pagos, tomar el más reciente.
 final currentWeekStatusProvider =
     FutureProvider<Map<int, Payment?>>((ref) async {
   final payments = await ref.watch(currentWeekPaymentsProvider.future);
-  // Si un miembro tiene varios pagos que cubren la misma semana
-  // (poco probable, pero posible), tomar el más reciente.
   final byMember = <int, Payment>{};
   for (final p in payments) {
     final existing = byMember[p.memberId];
@@ -48,6 +48,7 @@ class WeekStats {
   final int totalMembers;
   final int daysRemaining;
   final double expectedThisWeek;
+  final int classesPerWeek;
 
   const WeekStats({
     required this.paidCount,
@@ -55,34 +56,41 @@ class WeekStats {
     required this.totalMembers,
     required this.daysRemaining,
     required this.expectedThisWeek,
+    required this.classesPerWeek,
   });
 
   int get pendingCount => totalMembers - paidCount;
 }
 
 final currentWeekStatsProvider = FutureProvider<WeekStats>((ref) async {
+  final settings = ref.watch(settingsSyncProvider);
+  final cpw = settings.defaultClassesPerWeek;
   final payments = await ref.watch(currentWeekPaymentsProvider.future);
   final members = await ref.watch(membersProvider.future);
   final totalMembers = members.length;
   final paidCount = payments.length;
-  // Sumar la fracción de cada pago que corresponde a esta semana.
+  // Total REAL: por cada pago, clases que tomó esta semana × tarifa
+  // per-clase **de ese pago** (amount/classesCount). Antes se usaba la
+  // tarifa global, lo cual sumaba $10 completos a cada semana cuando
+  // un pago era multi-semana (bug v1.5.1).
+  final currentWeek = WeekCalculator.currentWeekStart();
   final total = payments.fold<double>(0, (acc, p) {
-    final perWeek = p.weeksCovered > 0 ? p.amount / p.weeksCovered : 0;
-    return acc + perWeek;
+    if (p.classesCount <= 0) return acc;
+    final perClass = p.amount / p.classesCount;
+    final taken = p.classesTakenIn(currentWeek);
+    return acc + taken * perClass;
   });
-  // Esperado: tarifa de 2 clases × miembros (asumimos 2 clases como
-  // tarifa "promedio" para el cálculo agregado).
-  final settings = ref.watch(settingsSyncProvider);
-  final defaultTier = settings.feeTees.isNotEmpty
-      ? settings.feeTees.first
-      : const FeeTier(classes: 2, amount: 2.5);
-  final expected = totalMembers * defaultTier.amount;
+  // Esperado: tarifa de la semana × miembros
+  final perClassRate = settings.perClassRate;
+  final tierAmount = settings.amountFor(cpw) ?? perClassRate * cpw;
+  final expected = totalMembers * tierAmount;
   return WeekStats(
     paidCount: paidCount,
     totalCollected: total,
     totalMembers: totalMembers,
     daysRemaining: WeekCalculator.daysRemainingThisWeek(),
     expectedThisWeek: expected,
+    classesPerWeek: cpw,
   );
 });
 
@@ -92,10 +100,13 @@ final memberHistoryProvider =
   return ref.watch(paymentRepositoryProvider).getForMember(memberId);
 });
 
-/// Pagos de una semana arbitraria (para WeekHistoryScreen).
+/// Pagos de una semana arbitraria.
 final weekPaymentsProvider =
     FutureProvider.family<List<Payment>, DateTime>((ref, weekStart) async {
-  return ref.watch(paymentRepositoryProvider).getForWeek(weekStart);
+  final settings = ref.watch(settingsSyncProvider);
+  return ref
+      .watch(paymentRepositoryProvider)
+      .getForWeek(weekStart, settings.defaultClassesPerWeek);
 });
 
 class PaymentsNotifier extends StateNotifier<int> {
@@ -105,17 +116,17 @@ class PaymentsNotifier extends StateNotifier<int> {
   /// Marca a un miembro como pagado.
   ///
   /// - [memberId]: el miembro
-  /// - [amount]: el monto total pagado (puede ser cualquier valor)
+  /// - [amount]: el monto total pagado
   /// - [weekStart]: semana del pago (lunes)
-  /// - [classesAttended]: clases tomadas esa semana
-  /// - [weeksCovered]: cuántas semanas cubre el pago (>= 1)
+  /// - [classesCount]: total de clases que cubre el pago
+  /// - [classesAttended]: clases tomadas en la semana del pago
   /// - [screenshotPath]: opcional
   Future<Payment> markPaid({
     required int memberId,
     required double amount,
     required DateTime weekStart,
-    int classesAttended = 2,
-    int? weeksCovered,
+    required int classesCount,
+    int classesAttended = 0,
     String? screenshotPath,
   }) async {
     final repo = _ref.read(paymentRepositoryProvider);
@@ -124,29 +135,19 @@ class PaymentsNotifier extends StateNotifier<int> {
         ? screenshotPath
         : null;
 
-    // Si no se pasan weeksCovered, intentar inferirlo dividiendo por la
-    // tarifa vigente para la cantidad de clases. Si no se puede, 1.
-    int covered = weeksCovered ?? 1;
-    if (weeksCovered == null) {
-      final settings = _ref.read(settingsSyncProvider);
-      final tier = settings.amountFor(classesAttended);
-      if (tier != null && tier > 0) {
-        covered = (amount / tier).floor();
-        if (covered < 1) covered = 1;
-      }
-    }
-
     final existing = await repo.getForMemberWeek(memberId, weekStart);
     if (existing != null) {
-      // Actualizar (re-asignar capture si viene una nueva)
       final updated = Payment(
         id: existing.id,
         memberId: memberId,
         weekStart: weekStart,
         weekEnd: weekEnd,
         amount: amount,
-        classesAttended: classesAttended,
-        weeksCovered: covered,
+        classesCount: classesCount,
+        classesAttended: classesAttended > 0
+            ? classesAttended
+            : existing.classesAttended,
+        attendance: existing.attendance,
         paidAt: DateTime.now(),
         screenshotPath: path ?? existing.screenshotPath,
         note: existing.note,
@@ -160,14 +161,25 @@ class PaymentsNotifier extends StateNotifier<int> {
       weekStart: weekStart,
       weekEnd: weekEnd,
       amount: amount,
+      classesCount: classesCount,
       classesAttended: classesAttended,
-      weeksCovered: covered,
       paidAt: DateTime.now(),
       screenshotPath: path,
     );
     await repo.upsert(created);
     _refresh();
     return created;
+  }
+
+  /// Actualiza la asistencia de una semana específica de un pago.
+  Future<void> setAttendance(
+      int paymentId, DateTime week, int classesTaken) async {
+    final repo = _ref.read(paymentRepositoryProvider);
+    final p = await repo.getById(paymentId);
+    if (p == null) return;
+    final updated = p.setAttendance(week, classesTaken);
+    await repo.upsert(updated);
+    _refresh();
   }
 
   /// Quita el pago de un miembro en la semana indicada.
@@ -179,14 +191,12 @@ class PaymentsNotifier extends StateNotifier<int> {
     _refresh();
   }
 
-  /// Actualiza solo la captura de un pago específico.
   Future<void> updateScreenshot(int paymentId, String? path) async {
     final repo = _ref.read(paymentRepositoryProvider);
     await repo.setScreenshot(paymentId, path);
     _refresh();
   }
 
-  /// Elimina un pago completo (y su captura).
   Future<void> deletePayment(int id) async {
     final repo = _ref.read(paymentRepositoryProvider);
     await repo.delete(id);

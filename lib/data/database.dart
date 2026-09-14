@@ -30,7 +30,7 @@ class AppDatabase {
     final path = p.join(dir.path, 'henko.db');
     return openDatabase(
       path,
-      version: 5,
+      version: 6,
       onConfigure: (db) async {
         await db.execute('PRAGMA foreign_keys = ON');
       },
@@ -51,8 +51,9 @@ class AppDatabase {
             week_start INTEGER NOT NULL,
             week_end INTEGER NOT NULL,
             amount REAL NOT NULL,
-            classes_attended INTEGER NOT NULL DEFAULT 2,
-            weeks_covered INTEGER NOT NULL DEFAULT 1,
+            classes_count INTEGER NOT NULL DEFAULT 1,
+            classes_attended INTEGER NOT NULL DEFAULT 0,
+            attendance TEXT NOT NULL DEFAULT '',
             screenshot_path TEXT,
             paid_at INTEGER NOT NULL,
             note TEXT,
@@ -100,7 +101,6 @@ class AppDatabase {
           ''');
         }
         if (oldVersion < 5) {
-          // v1.3.0: tarifas editables + pagos multi-semana.
           await db.execute(
             "ALTER TABLE payments ADD COLUMN classes_attended INTEGER NOT NULL DEFAULT 2",
           );
@@ -113,6 +113,27 @@ class AppDatabase {
               value TEXT NOT NULL
             );
           ''');
+        }
+        if (oldVersion < 6) {
+          // v1.4.0: modelo basado en CLASES (no semanas). Migrar:
+          // - weeks_covered (viejo, eliminado) → classes_count (nuevo)
+          // - classes_attended (viejo: clases de ESA semana) → se mantiene
+          //   pero ahora es la cantidad de clases que tomó esa semana del pago
+          await db.execute('''
+            ALTER TABLE payments ADD COLUMN classes_count INTEGER NOT NULL DEFAULT 1
+          ''');
+          await db.execute('''
+            ALTER TABLE payments ADD COLUMN attendance TEXT NOT NULL DEFAULT ''
+          ''');
+          // Migrar datos: para cada pago, copiar weeks_covered → classes_count
+          await db.execute('''
+            UPDATE payments
+            SET classes_count = COALESCE(weeks_covered, 1)
+            WHERE classes_count = 1
+          ''');
+          // classes_attended antes era "clases de la semana del pago";
+          // ahora es "clases que efectivamente tomó en esa semana".
+          // Como antes el sistema asumía todas, lo dejamos igual.
         }
       },
     );

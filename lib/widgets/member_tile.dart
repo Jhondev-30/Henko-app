@@ -2,14 +2,16 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../models/member.dart';
 import '../models/payment.dart';
+import '../providers/settings_provider.dart';
 import '../theme/app_theme.dart';
 import '../utils/currency_formatter.dart';
 
 /// Card de un miembro en la lista — Material 3 con elevación sutil.
-class MemberTile extends StatelessWidget {
+class MemberTile extends ConsumerWidget {
   final Member member;
   final Payment? payment;
   final VoidCallback onTapPayButton;
@@ -24,10 +26,13 @@ class MemberTile extends StatelessWidget {
   });
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     final hasPaid = payment != null;
     final hasPhoto = member.photoPath != null && member.photoPath!.isNotEmpty;
     final scheme = Theme.of(context).colorScheme;
+    // Necesitamos el classesPerWeek actual para calcular la fracción
+    // per-semana cuando el pago cubre varias semanas.
+    final cpw = ref.watch(settingsSyncProvider).defaultClassesPerWeek;
 
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
@@ -61,7 +66,11 @@ class MemberTile extends StatelessWidget {
                         overflow: TextOverflow.ellipsis,
                       ),
                       const SizedBox(height: 4),
-                      _StatusPill(hasPaid: hasPaid, payment: payment),
+                      _StatusPill(
+                        hasPaid: hasPaid,
+                        payment: payment,
+                        classesPerWeek: cpw,
+                      ),
                     ],
                   ),
                 ),
@@ -79,11 +88,27 @@ class MemberTile extends StatelessWidget {
 class _StatusPill extends StatelessWidget {
   final bool hasPaid;
   final Payment? payment;
-  const _StatusPill({required this.hasPaid, required this.payment});
+  final int classesPerWeek;
+  const _StatusPill({
+    required this.hasPaid,
+    required this.payment,
+    required this.classesPerWeek,
+  });
 
   @override
   Widget build(BuildContext context) {
     if (hasPaid) {
+      // Fracción per-semana del pago (cuánto aporta ESTA semana).
+      // Pago multi-semana (ej: $10 / 8 clases / 2 clases-sem = 4 sem)
+      // → muestra $2.50 esta semana + badge "cubre 4 sem (8 clases)".
+      final weeksCovered = classesPerWeek <= 0
+          ? 1
+          : (payment!.classesCount / classesPerWeek).floor().clamp(1, 99);
+      final perWeek = weeksCovered == 0
+          ? payment!.amount
+          : payment!.amount / weeksCovered;
+      final isMultiWeek = weeksCovered > 1;
+
       return Container(
         padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
         decoration: BoxDecoration(
@@ -97,13 +122,32 @@ class _StatusPill extends StatelessWidget {
                 size: 12, color: AppTheme.success),
             const SizedBox(width: 4),
             Text(
-              'Pagó ${CurrencyFormatter.format(payment!.amount)}',
+              'Pagó ${CurrencyFormatter.format(perWeek)}',
               style: const TextStyle(
                 fontSize: 11,
                 fontWeight: FontWeight.w600,
                 color: AppTheme.success,
               ),
             ),
+            if (isMultiWeek) ...[
+              const SizedBox(width: 6),
+              Container(
+                padding: const EdgeInsets.symmetric(
+                    horizontal: 6, vertical: 1),
+                decoration: BoxDecoration(
+                  color: AppTheme.success.withValues(alpha: 0.18),
+                  borderRadius: BorderRadius.circular(AppTheme.rFull),
+                ),
+                child: Text(
+                  'cubre $weeksCovered sem (${payment!.classesCount} clases)',
+                  style: const TextStyle(
+                    fontSize: 10,
+                    fontWeight: FontWeight.w600,
+                    color: AppTheme.success,
+                  ),
+                ),
+              ),
+            ],
             if (payment!.screenshotPath != null) ...[
               const SizedBox(width: 6),
               const Icon(Icons.attachment_rounded,

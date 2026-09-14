@@ -22,11 +22,12 @@ class MembersNotifier extends StateNotifier<int> {
 
   Future<int> add(String name, {String? photoPath}) async {
     final repo = _ref.read(memberRepositoryProvider);
-    final id = await repo.insert(Member(
-      name: name.trim(),
-      createdAt: DateTime.now(),
+    // UPSERT: si el nombre ya existe (aunque esté soft-deleted),
+    // lo re-activamos en vez de fallar con UNIQUE constraint.
+    final id = await repo.insertOrReactivate(
+      name.trim(),
       photoPath: photoPath,
-    ));
+    );
     _ref.invalidate(membersProvider);
     _ref.invalidate(currentWeekStatusProvider);
     _ref.invalidate(currentWeekStatsProvider);

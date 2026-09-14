@@ -7,8 +7,7 @@ class PaymentRepository {
   final AppDatabase _db;
   PaymentRepository(this._db);
 
-  /// Devuelve el pago MÁS RECIENTE del miembro que cubre [weekStart].
-  /// Útil para preguntar "¿tiene pago esta semana?".
+  /// Devuelve el pago MÁS RECIENTE del miembro que arranca en [weekStart].
   Future<Payment?> getForMemberWeek(
       int memberId, DateTime weekStart) async {
     if (AppDatabase.isWeb) {
@@ -26,25 +25,46 @@ class PaymentRepository {
     return Payment.fromMap(rows.first);
   }
 
-  /// Pagos que cubren [weekStart] (puede ser un pago multi-semana).
-  /// IMPORTANTE: para un pago con weeksCovered=3 y weekStart=lun 5,
-  /// este método lo devuelve para lun 5, lun 12 y lun 19.
-  Future<List<Payment>> getForWeek(DateTime weekStart) async {
+  /// Devuelve un pago por su ID.
+  Future<Payment?> getById(int id) async {
     if (AppDatabase.isWeb) {
-      return InMemoryStore.instance.paymentsForWeek(weekStart);
+      for (final p in InMemoryStore.instance.allPaymentsForMember(0)) {
+        if (p.id == id) return p;
+      }
+      // Búsqueda amplia: recorremos todos los miembros
+      for (final m in InMemoryStore.instance.membersAll(activeOnly: false)) {
+        if (m.id == null) continue;
+        for (final p in InMemoryStore.instance.allPaymentsForMember(m.id!)) {
+          if (p.id == id) return p;
+        }
+      }
+      return null;
     }
     final db = await _db.database;
-    // Buscamos pagos cuyo weekStart <= weekStart < weekStart + 7*N días
-    // Equivalente SQL: week_start <= X AND week_start + weeks_covered*7 > X
-    final target = weekStart.millisecondsSinceEpoch;
-    final weekMs = 7 * 24 * 60 * 60 * 1000;
-    final rows = await db.rawQuery('''
-      SELECT * FROM payments
-      WHERE week_start <= ?
-        AND (week_start + weeks_covered * ?) > ?
-      ORDER BY paid_at ASC
-    ''', [target, weekMs, target]);
-    return rows.map(Payment.fromMap).toList();
+    final rows = await db.query('payments', where: 'id = ?', whereArgs: [id], limit: 1);
+    if (rows.isEmpty) return null;
+    return Payment.fromMap(rows.first);
+  }
+
+  /// Pagos que cubren [weekStart] según la cantidad de clases y
+  /// `classesPerWeek` actual.
+  Future<List<Payment>> getForWeek(
+      DateTime weekStart, int classesPerWeek) async {
+    if (AppDatabase.isWeb) {
+      return InMemoryStore.instance
+          .paymentsForWeek(weekStart, classesPerWeek);
+    }
+    final db = await _db.database;
+    final rows = await db.query(
+      'payments',
+      where: 'week_start <= ?',
+      whereArgs: [weekStart.millisecondsSinceEpoch],
+      orderBy: 'paid_at ASC',
+    );
+    final payments = rows.map(Payment.fromMap).toList();
+    return payments
+        .where((p) => p.coversWeek(weekStart, classesPerWeek))
+        .toList();
   }
 
   Future<List<Payment>> getForMember(int memberId) async {
@@ -64,7 +84,6 @@ class PaymentRepository {
   /// Devuelve TODOS los pagos (sin filtro). Usado por el backup.
   Future<List<Payment>> getAllPaymentsForBackup() async {
     if (AppDatabase.isWeb) {
-      // En web el store tiene todo en memoria
       final list = <Payment>[];
       for (final m in InMemoryStore.instance.membersAll(activeOnly: false)) {
         if (m.id == null) continue;
@@ -114,8 +133,7 @@ class PaymentRepository {
     return db.delete('payments', where: 'id = ?', whereArgs: [id]);
   }
 
-  /// Borra TODOS los pagos de un miembro. Útil para corregir
-  /// pagos mal registrados.
+  /// Borra TODOS los pagos de un miembro.
   Future<int> deleteAllForMember(int memberId) async {
     if (AppDatabase.isWeb) {
       int count = 0;
@@ -145,18 +163,27 @@ class PaymentRepository {
     );
   }
 
-  /// Total real de la semana (sumando la fracción de pagos multi-semana
-  /// que corresponde a esta semana).
-  Future<double> totalForWeek(DateTime weekStart) async {
-    final payments = await getForWeek(weekStart);
+  /// Total REAL de la semana: por cada pago, clases tomadas esa semana
+  /// × tarifa-por-clase **de ese mismo pago** (amount/classesCount).
+  ///
+  /// Cada pago tiene su propia tarifa porque los pagos pueden ser de
+  /// montos distintos. Ej: Aynara $10/8 clases = $1.25/clase, Annah
+  /// $7.50/6 clases = $1.25/clase, pero podrían ser distintos.
+  Future<double> totalForWeek(
+      DateTime weekStart, int classesPerWeek) async {
+    final payments = await getForWeek(weekStart, classesPerWeek);
     return payments.fold<double>(0, (acc, p) {
-      final perWeek = p.weeksCovered > 0 ? p.amount / p.weeksCovered : 0;
-      return acc + perWeek;
+      if (p.classesCount <= 0) return acc;
+      final perClass = p.amount / p.classesCount;
+      // Clases tomadas esa semana (puede ser 0 si la persona faltó).
+      final taken = p.classesTakenIn(weekStart);
+      return acc + taken * perClass;
     });
   }
 
-  Future<int> countForWeek(DateTime weekStart) async {
-    final payments = await getForWeek(weekStart);
+  Future<int> countForWeek(
+      DateTime weekStart, int classesPerWeek) async {
+    final payments = await getForWeek(weekStart, classesPerWeek);
     return payments.length;
   }
 }

@@ -15,7 +15,13 @@ import '../utils/week_calculator.dart';
 /// WhatsApp o copiar al portapapeles.
 class ReminderMessageBuilder {
   static String build({
-    required List<({String name, bool paid, double? amount})> rows,
+    required List<({
+      String name,
+      bool paid,
+      double? amount,
+      int? classesCount,
+      int classesPerWeek,
+    })> rows,
     required double totalCollected,
     required double expected,
     required int paidCount,
@@ -26,18 +32,39 @@ class ReminderMessageBuilder {
   }) {
     final weekLabel = WeekCalculator.label(weekStart, weekEnd);
     final pendientes = rows.where((r) => !r.paid).map((r) => r.name).toList();
-    final pagaron = rows.where((r) => r.paid).map((r) => r.name).toList();
     final fmt = NumberFormat.currency(
       locale: 'en_US',
       symbol: r'\$',
       decimalDigits: 2,
     );
+
+    // "Ya aportaron" muestra el APORTE INDIVIDUAL de esta semana, no el
+    // monto total del pago. Para pagos multi-semana se desglosa.
+    String lineFor(RowAccessor r) {
+      final n = r.name;
+      final classesCount = r.classesCount;
+      if (classesCount == null || classesCount <= 0) {
+        return '• $n';
+      }
+      final weeksCovered = (classesCount / r.classesPerWeek).floor();
+      final effectiveWeeks = weeksCovered < 1 ? 1 : weeksCovered;
+      // Fracción per-semana del pago total.
+      final amount = r.amount ?? 0.0;
+      final perWeek = amount / effectiveWeeks;
+      if (effectiveWeeks > 1) {
+        return '• $n — ${fmt.format(perWeek)} esta semana '
+            '(pagó ${fmt.format(amount)} / $effectiveWeeks sem)';
+      }
+      return '• $n — ${fmt.format(perWeek)}';
+    }
+
+    final pagaron = rows.where((r) => r.paid).toList();
     final pendientesTxt = pendientes.isEmpty
         ? '_¡Todos al día! Gracias por la disciplina del grupo._'
         : pendientes.map((n) => '• $n').join('\n');
     final pagaronTxt = pagaron.isEmpty
         ? '_Aún nadie ha confirmado su aporte._'
-        : pagaron.map((n) => '• $n').join('\n');
+        : pagaron.map(lineFor).join('\n');
 
     final buffer = StringBuffer()
       ..writeln('💃 *HENKO* — _Grupo Estable de Danza Contemporánea_')
@@ -67,6 +94,15 @@ class ReminderMessageBuilder {
   }
 }
 
+/// Tipo alias para los rows (compatible con `({...})` records de Dart 3).
+typedef RowAccessor = ({
+  String name,
+  bool paid,
+  double? amount,
+  int? classesCount,
+  int classesPerWeek,
+});
+
 /// Hoja inferior con dos acciones: copiar al portapapeles o abrir WhatsApp.
 class ReminderSheet {
   /// Muestra el sheet de recordatorio. `onResult` recibe el mensaje armado
@@ -94,26 +130,31 @@ class ReminderSheet {
         p.memberId: p,
     };
 
+    final settings = ref.read(settingsSyncProvider);
+    final cpw = settings.defaultClassesPerWeek;
+
     final rows = members
         .map((m) => (
               name: m.member.name,
               paid: m.payment != null,
               amount: m.payment?.amount,
+              classesCount: m.payment?.classesCount,
+              classesPerWeek: cpw,
             ))
         .toList();
     final paidCount = rows.where((r) => r.paid).length;
-    // Sumar la fracción que corresponde a esta semana (no el monto total
-    // del pago, porque un pago multi-semana se reparte entre varias)
+    // Total REAL: por cada pago, clases tomadas esa semana × tarifa
+    // per-clase de ESE pago. Antes se usaba la tarifa global y se sumaba
+    // el monto completo de pagos multi-semana (bug v1.5.1).
     final totalCollected = paidIds.values.fold<double>(0, (acc, p) {
-      final perWeek = p.weeksCovered > 0 ? p.amount / p.weeksCovered : 0;
-      return acc + perWeek;
+      if (p.classesCount <= 0) return acc;
+      final perClass = p.amount / p.classesCount;
+      final taken = p.classesTakenIn(selectedWeek);
+      return acc + taken * perClass;
     });
-    final settings = ref.read(settingsSyncProvider);
-    final defaultTier = settings.feeTees.isNotEmpty
-        ? settings.feeTees.first
-        : null;
+    final perClassRate = settings.perClassRate;
     final expected =
-        rows.length * (defaultTier?.amount ?? 2.5);
+        rows.length * (settings.amountFor(cpw) ?? perClassRate * cpw);
     final feeDescription = settings.feeTees
         .map((t) => '${t.classes} clase${t.classes == 1 ? "" : "s"} '
             '\$${t.amount.toStringAsFixed(2)}')

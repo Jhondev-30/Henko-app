@@ -1,7 +1,7 @@
 name: henko
 description: Administración de pagos semanales - Academia de baile Henko
 publish_to: 'none'
-version: 1.3.0+5
+version: 1.5.2+9
 
 environment:
   sdk: ^3.5.0

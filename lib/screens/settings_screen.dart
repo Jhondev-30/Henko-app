@@ -42,6 +42,56 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
         data: (settings) => ListView(
           padding: const EdgeInsets.all(16),
           children: [
+            // ── Sección clases por semana ──
+            _SectionTitle(
+              icon: Icons.event_repeat_rounded,
+              title: 'Clases por semana (default)',
+              subtitle:
+                  'Cuántas clases se dan normalmente en la semana. Se usa para calcular automáticamente cuántas semanas cubre un pago y el monto esperado.',
+            ),
+            const SizedBox(height: 12),
+            Card(
+              child: Padding(
+                padding: const EdgeInsets.all(16),
+                child: Row(
+                  children: [
+                    const Icon(Icons.calendar_view_week_rounded,
+                        color: AppTheme.brandPrimary),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const Text('Cantidad de clases por semana',
+                              style: TextStyle(
+                                  fontWeight: FontWeight.w700, fontSize: 14)),
+                          Text(
+                            'Cambialo si esta semana o las siguientes tienen más o menos clases (feriado, evento especial, etc.)',
+                            style: TextStyle(
+                                fontSize: 12,
+                                color: scheme.onSurfaceVariant),
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    _ClassesPerWeekStepper(
+                      value: settings.defaultClassesPerWeek,
+                      onChanged: (newValue) {
+                        ref.read(settingsRepositoryProvider).save(
+                              settings.copyWith(
+                                defaultClassesPerWeek: newValue,
+                              ),
+                            );
+                        ref.invalidate(settingsProvider);
+                      },
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            const SizedBox(height: 16),
+
             // ── Sección tarifas ──
             _SectionTitle(
               icon: Icons.payments_outlined,
@@ -61,7 +111,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                         newList[i] = newTier;
                         ref
                             .read(settingsRepositoryProvider)
-                            .save(AppSettings(feeTiers: newList));
+                            .save(settings.copyWith(feeTiers: newList));
                         ref.invalidate(settingsProvider);
                       },
                       onDelete: settings.feeTees.length > 1
@@ -71,7 +121,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                               newList.removeAt(i);
                               ref
                                   .read(settingsRepositoryProvider)
-                                  .save(AppSettings(feeTiers: newList));
+                                  .save(settings.copyWith(feeTiers: newList));
                               ref.invalidate(settingsProvider);
                             }
                           : null,
@@ -98,7 +148,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                         ));
                       ref
                           .read(settingsRepositoryProvider)
-                          .save(AppSettings(feeTiers: newList));
+                          .save(settings.copyWith(feeTiers: newList));
                       ref.invalidate(settingsProvider);
                     },
                   ),
@@ -539,6 +589,50 @@ class _InfoRow extends StatelessWidget {
           fontWeight: FontWeight.w700,
           color: AppTheme.brandPrimary,
         ),
+      ),
+    );
+  }
+}
+
+class _ClassesPerWeekStepper extends StatelessWidget {
+  final int value;
+  final ValueChanged<int> onChanged;
+  const _ClassesPerWeekStepper(
+      {required this.value, required this.onChanged});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      decoration: BoxDecoration(
+        color: AppTheme.brandPrimary.withValues(alpha: 0.08),
+        borderRadius: BorderRadius.circular(AppTheme.rFull),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          IconButton(
+            icon: const Icon(Icons.remove_rounded),
+            onPressed: value > 1 ? () => onChanged(value - 1) : null,
+            visualDensity: VisualDensity.compact,
+          ),
+          Container(
+            constraints: const BoxConstraints(minWidth: 32),
+            child: Text(
+              '$value',
+              textAlign: TextAlign.center,
+              style: const TextStyle(
+                fontSize: 18,
+                fontWeight: FontWeight.w800,
+                color: AppTheme.brandPrimary,
+              ),
+            ),
+          ),
+          IconButton(
+            icon: const Icon(Icons.add_rounded),
+            onPressed: value < 7 ? () => onChanged(value + 1) : null,
+            visualDensity: VisualDensity.compact,
+          ),
+        ],
       ),
     );
   }

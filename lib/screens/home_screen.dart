@@ -15,6 +15,7 @@ import '../models/member.dart';
 import '../providers/home_providers.dart';
 import '../providers/members_provider.dart';
 import '../providers/payments_provider.dart';
+import '../providers/settings_provider.dart';
 import '../theme/app_theme.dart';
 import '../widgets/header_stats.dart';
 import '../widgets/member_tile.dart';
@@ -172,14 +173,22 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
             memberId: memberId,
             amount: result.amount,
             weekStart: result.weekStart,
+            classesCount: result.classesCount,
             classesAttended: result.classesAttended,
-            weeksCovered: result.weeksCovered,
             screenshotPath: result.screenshotPath,
           );
       if (mounted) {
-        final msg = result.weeksCovered > 1
-            ? '✓ Pagado · cubre ${result.weeksCovered} semanas'
-            : (result.withCapture ? '✓ Pagado con captura' : '✓ Pagado');
+        final cpw = ref
+                .read(settingsProvider)
+                .valueOrNull
+                ?.defaultClassesPerWeek ??
+            2;
+        final weeks = (result.classesCount / cpw).floor().clamp(1, 999);
+        final msg = weeks > 1
+            ? '✓ Pagado · cubre $weeks semanas (${result.classesCount} clases)'
+            : (result.withCapture
+                ? '✓ Pagado con captura'
+                : '✓ Pagado');
         _snack(msg);
       }
     } catch (e) {
