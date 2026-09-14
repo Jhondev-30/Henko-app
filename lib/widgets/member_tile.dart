@@ -14,6 +14,7 @@ import '../utils/currency_formatter.dart';
 class MemberTile extends ConsumerWidget {
   final Member member;
   final Payment? payment;
+  final DateTime? selectedWeek;
   final VoidCallback onTapPayButton;
   final VoidCallback? onTap;
 
@@ -22,6 +23,7 @@ class MemberTile extends ConsumerWidget {
     required this.member,
     required this.payment,
     required this.onTapPayButton,
+    this.selectedWeek,
     this.onTap,
   });
 
@@ -30,8 +32,6 @@ class MemberTile extends ConsumerWidget {
     final hasPaid = payment != null;
     final hasPhoto = member.photoPath != null && member.photoPath!.isNotEmpty;
     final scheme = Theme.of(context).colorScheme;
-    // Necesitamos el classesPerWeek actual para calcular la fracción
-    // per-semana cuando el pago cubre varias semanas.
     final cpw = ref.watch(settingsSyncProvider).defaultClassesPerWeek;
 
     return Padding(
@@ -70,6 +70,7 @@ class MemberTile extends ConsumerWidget {
                         hasPaid: hasPaid,
                         payment: payment,
                         classesPerWeek: cpw,
+                        selectedWeek: selectedWeek,
                       ),
                     ],
                   ),
@@ -89,44 +90,83 @@ class _StatusPill extends StatelessWidget {
   final bool hasPaid;
   final Payment? payment;
   final int classesPerWeek;
+  final DateTime? selectedWeek;
   const _StatusPill({
     required this.hasPaid,
     required this.payment,
     required this.classesPerWeek,
+    this.selectedWeek,
   });
 
   @override
   Widget build(BuildContext context) {
     if (hasPaid) {
-      // Fracción per-semana del pago (cuánto aporta ESTA semana).
-      // Pago multi-semana (ej: $10 / 8 clases / 2 clases-sem = 4 sem)
-      // → muestra $2.50 esta semana + badge "cubre 4 sem (8 clases)".
+      final p = payment!;
+      // Semanas cubiertas según clasesCount (puede incluir la semana
+      // actual y futuras). Ej: 8 clases / 2 clases-sem = 4 sem.
       final weeksCovered = classesPerWeek <= 0
           ? 1
-          : (payment!.classesCount / classesPerWeek).floor().clamp(1, 99);
-      final perWeek = weeksCovered == 0
-          ? payment!.amount
-          : payment!.amount / weeksCovered;
+          : (p.classesCount / classesPerWeek).floor().clamp(1, 99);
+      final perWeek =
+          weeksCovered == 0 ? p.amount : p.amount / weeksCovered;
       final isMultiWeek = weeksCovered > 1;
+
+      // ¿Cuántas clases tomó realmente ESTA semana? (puede ser 0 si
+      // el admin marcó que faltó, o 1 si pagó menos clases).
+      int? takenThisWeek;
+      if (selectedWeek != null) {
+        takenThisWeek = p.classesTakenIn(selectedWeek!);
+      }
+
+      // Crédito restante: clases pagadas − clases tomadas en TODAS las
+      // semanas cubiertas. Si > 0, tiene "clase(s) de crédito" para
+      // una semana futura.
+      int creditLeft = 0;
+      if (isMultiWeek) {
+        final taken = <int>[];
+        for (var i = 0; i < weeksCovered; i++) {
+          final w = p.weekStart.add(Duration(days: 7 * i));
+          taken.add(p.classesTakenIn(w));
+        }
+        final totalTaken = taken.fold<int>(0, (a, b) => a + b);
+        creditLeft = p.classesCount - totalTaken;
+      }
+
+      // Color base: si tomó menos de lo esperado esta semana → ámbar.
+      // Si no, verde normal.
+      final tookLessThanExpected = takenThisWeek != null &&
+          takenThisWeek < classesPerWeek;
+      final pillColor =
+          tookLessThanExpected ? AppTheme.warning : AppTheme.success;
+      final pillAlpha = tookLessThanExpected ? 0.14 : 0.12;
 
       return Container(
         padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
         decoration: BoxDecoration(
-          color: AppTheme.success.withValues(alpha: 0.12),
+          color: pillColor.withValues(alpha: pillAlpha),
           borderRadius: BorderRadius.circular(AppTheme.rFull),
         ),
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            const Icon(Icons.check_rounded,
-                size: 12, color: AppTheme.success),
+            Icon(
+              tookLessThanExpected
+                  ? Icons.warning_amber_rounded
+                  : Icons.check_rounded,
+              size: 12,
+              color: pillColor,
+            ),
             const SizedBox(width: 4),
-            Text(
-              'Pagó ${CurrencyFormatter.format(perWeek)}',
-              style: const TextStyle(
-                fontSize: 11,
-                fontWeight: FontWeight.w600,
-                color: AppTheme.success,
+            Flexible(
+              child: Text(
+                'Pagó ${CurrencyFormatter.format(perWeek)}',
+                style: TextStyle(
+                  fontSize: 11,
+                  fontWeight: FontWeight.w600,
+                  color: pillColor,
+                ),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
               ),
             ),
             if (isMultiWeek) ...[
@@ -139,7 +179,7 @@ class _StatusPill extends StatelessWidget {
                   borderRadius: BorderRadius.circular(AppTheme.rFull),
                 ),
                 child: Text(
-                  'cubre $weeksCovered sem (${payment!.classesCount} clases)',
+                  'cubre $weeksCovered sem',
                   style: const TextStyle(
                     fontSize: 10,
                     fontWeight: FontWeight.w600,
@@ -148,7 +188,54 @@ class _StatusPill extends StatelessWidget {
                 ),
               ),
             ],
-            if (payment!.screenshotPath != null) ...[
+            // Badge: "solo N clase(s)" si esta semana tomó < esperado.
+            if (takenThisWeek != null &&
+                classesPerWeek > 0 &&
+                takenThisWeek < classesPerWeek &&
+                takenThisWeek >= 0) ...[
+              const SizedBox(width: 6),
+              Container(
+                padding: const EdgeInsets.symmetric(
+                    horizontal: 6, vertical: 1),
+                decoration: BoxDecoration(
+                  color: AppTheme.warning.withValues(alpha: 0.22),
+                  borderRadius: BorderRadius.circular(AppTheme.rFull),
+                ),
+                child: Text(
+                  takenThisWeek == 0
+                      ? 'no asistió'
+                      : 'solo $takenThisWeek '
+                          'clase${takenThisWeek == 1 ? "" : "s"}',
+                  style: const TextStyle(
+                    fontSize: 10,
+                    fontWeight: FontWeight.w700,
+                    color: AppTheme.warning,
+                  ),
+                ),
+              ),
+            ],
+            // Badge: "le quedan N clase(s)" si tiene crédito.
+            if (creditLeft > 0) ...[
+              const SizedBox(width: 6),
+              Container(
+                padding: const EdgeInsets.symmetric(
+                    horizontal: 6, vertical: 1),
+                decoration: BoxDecoration(
+                  color: AppTheme.brandPrimary.withValues(alpha: 0.14),
+                  borderRadius: BorderRadius.circular(AppTheme.rFull),
+                ),
+                child: Text(
+                  'le ${creditLeft == 1 ? "queda" : "quedan"} '
+                  '$creditLeft clase${creditLeft == 1 ? "" : "s"}',
+                  style: TextStyle(
+                    fontSize: 10,
+                    fontWeight: FontWeight.w700,
+                    color: AppTheme.brandPrimary,
+                  ),
+                ),
+              ),
+            ],
+            if (p.screenshotPath != null) ...[
               const SizedBox(width: 6),
               const Icon(Icons.attachment_rounded,
                   size: 11, color: AppTheme.success),

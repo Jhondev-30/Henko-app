@@ -369,9 +369,12 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                     separatorBuilder: (_, __) => const SizedBox(height: 4),
                     itemBuilder: (context, i) {
                       final item = filteredItems[i];
+                      final selectedWeek =
+                          ref.watch(selectedWeekStartProvider);
                       return MemberTile(
                         member: item.member,
                         payment: item.payment,
+                        selectedWeek: selectedWeek,
                         onTapPayButton: () => _onTapPayButton(item.member),
                         onTap: () {
                           Navigator.push(

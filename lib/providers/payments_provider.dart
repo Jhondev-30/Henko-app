@@ -182,6 +182,41 @@ class PaymentsNotifier extends StateNotifier<int> {
     _refresh();
   }
 
+  /// Mueve [classesToMove] clases de [fromWeek] a la siguiente semana
+  /// cubierta por el pago. Las clases de la semana origen se reducen
+  /// (no pueden quedar negativas) y la semana destino se incrementa.
+  /// Útil cuando una persona falta a una semana: las clases quedan
+  /// como crédito para la próxima.
+  Future<void> moveClassesToNextWeek(
+    int paymentId,
+    DateTime fromWeek,
+    int classesToMove,
+  ) async {
+    if (classesToMove <= 0) return;
+    final repo = _ref.read(paymentRepositoryProvider);
+    final p = await repo.getById(paymentId);
+    if (p == null) return;
+    final settings = _ref.read(settingsSyncProvider);
+    final cpw = settings.defaultClassesPerWeek;
+    final weeks = p.coveredWeeks(cpw);
+    final idx = weeks.indexWhere(
+      (w) => w.isAtSameMomentAs(fromWeek),
+    );
+    if (idx == -1 || idx + 1 >= weeks.length) {
+      // No hay semana siguiente cubierta por este pago.
+      return;
+    }
+    final nextWeek = weeks[idx + 1];
+    final fromTaken = p.classesTakenIn(fromWeek);
+    final move = classesToMove > fromTaken ? fromTaken : classesToMove;
+    if (move <= 0) return;
+    final updatedFrom = p.setAttendance(fromWeek, fromTaken - move);
+    final nextTaken = updatedFrom.classesTakenIn(nextWeek);
+    final updated = updatedFrom.setAttendance(nextWeek, nextTaken + move);
+    await repo.upsert(updated);
+    _refresh();
+  }
+
   /// Quita el pago de un miembro en la semana indicada.
   Future<void> unmarkPaid(int memberId, DateTime weekStart) async {
     final repo = _ref.read(paymentRepositoryProvider);

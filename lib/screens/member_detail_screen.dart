@@ -439,6 +439,16 @@ class _MemberDetailScreenState extends ConsumerState<MemberDetailScreen> {
                               .read(paymentsNotifierProvider.notifier)
                               .setAttendance(pay.id!, week, taken);
                         },
+                        onMoveClasses: (fromWeek, n) async {
+                          await ref
+                              .read(paymentsNotifierProvider.notifier)
+                              .moveClassesToNextWeek(
+                                  pay.id!, fromWeek, n);
+                          if (mounted) {
+                            _snack(
+                                '↪ $n clase${n == 1 ? "" : "s"} movida${n == 1 ? "" : "s"} a la próxima semana');
+                          }
+                        },
                         onOpenScreenshot: pay.screenshotPath != null
                             ? () => _openScreenshot(pay.screenshotPath!)
                             : null,
@@ -594,6 +604,7 @@ class _PaymentRow extends StatelessWidget {
   final VoidCallback onDeletePayment;
   final int classesPerWeek;
   final void Function(DateTime week, int classesTaken) onUpdateAttendance;
+  final void Function(DateTime fromWeek, int classesToMove) onMoveClasses;
 
   const _PaymentRow({
     required this.payment,
@@ -603,6 +614,7 @@ class _PaymentRow extends StatelessWidget {
     required this.onDeletePayment,
     required this.classesPerWeek,
     required this.onUpdateAttendance,
+    required this.onMoveClasses,
   });
 
   @override
@@ -752,6 +764,7 @@ class _PaymentRow extends StatelessWidget {
                 payment: payment,
                 classesPerWeek: classesPerWeek,
                 onUpdate: onUpdateAttendance,
+                onMoveNext: onMoveClasses,
               ),
             ],
           ],
@@ -815,17 +828,19 @@ class _PaymentRow extends StatelessWidget {
 
 /// Editor de asistencia: muestra cada semana cubierta por el pago
 /// y permite ajustar cuántas clases tomó la persona en cada una.
-/// Si tomó menos de las pagadas, queda "crédito" que se acumula
-/// (no se pierde: la app lo refleja en el cálculo de "Recaudado esperado").
+/// Si tomó menos de las pagadas, queda "crédito" que se acumula y se
+/// puede mover a la próxima semana con un botón explícito.
 class _AttendanceEditor extends StatelessWidget {
   final Payment payment;
   final int classesPerWeek;
   final void Function(DateTime week, int classesTaken) onUpdate;
+  final void Function(DateTime fromWeek, int classesToMove) onMoveNext;
 
   const _AttendanceEditor({
     required this.payment,
     required this.classesPerWeek,
     required this.onUpdate,
+    required this.onMoveNext,
   });
 
   @override
@@ -898,15 +913,49 @@ class _AttendanceEditor extends StatelessWidget {
           const SizedBox(height: 4),
           Text(
             hasMissing
-                ? 'La persona pagó $totalPaid clases pero solo tomó $totalTaken. Las ${diff} que faltan quedan como crédito para otra semana.'
+                ? 'La persona pagó $totalPaid clases pero solo tomó $totalTaken. Las ${diff} que faltan son crédito disponible.'
                 : 'Pagó $totalPaid clases y tomó $totalTaken. Todo al día.',
             style: TextStyle(
                 fontSize: 11.5, color: scheme.onSurfaceVariant),
           ),
+          if (hasMissing) ...[
+            const SizedBox(height: 4),
+            Container(
+              padding: const EdgeInsets.symmetric(
+                  horizontal: 8, vertical: 6),
+              decoration: BoxDecoration(
+                color: AppTheme.warning.withValues(alpha: 0.08),
+                borderRadius: BorderRadius.circular(AppTheme.rSm),
+              ),
+              child: Row(
+                children: [
+                  const Icon(Icons.info_outline_rounded,
+                      size: 14, color: AppTheme.warning),
+                  const SizedBox(width: 6),
+                  Expanded(
+                    child: Text(
+                      'Tip: cuando faltes a una clase, pulsa el ícono '
+                      '↪ junto a la semana para mover el crédito a la '
+                      'siguiente. El pago se prorroga automáticamente.',
+                      style: TextStyle(
+                          fontSize: 10.5,
+                          color: AppTheme.warning,
+                          height: 1.3),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
           const SizedBox(height: 10),
           // Filas de cada semana
-          ...weeks.map((week) {
+          ...weeks.asMap().entries.map((entry) {
+            final idx = entry.key;
+            final week = entry.value;
             final taken = payment.classesTakenIn(week);
+            final isLastWeek = idx == weeks.length - 1;
+            final canMoveNext =
+                !isLastWeek && taken > 0;
             return Padding(
               padding: const EdgeInsets.only(bottom: 6),
               child: Row(
@@ -967,6 +1016,26 @@ class _AttendanceEditor extends StatelessWidget {
                     ),
                     onPressed: () => onUpdate(week, taken + 1),
                   ),
+                  // Botón "mover a próxima semana"
+                  if (canMoveNext) ...[
+                    const SizedBox(width: 4),
+                    Tooltip(
+                      message: 'Mover 1 clase a la próxima semana',
+                      child: IconButton(
+                        icon: const Icon(Icons.fast_forward_rounded,
+                            size: 16),
+                        visualDensity: VisualDensity.compact,
+                        style: IconButton.styleFrom(
+                          backgroundColor:
+                              AppTheme.brandPrimary.withValues(alpha: 0.10),
+                          foregroundColor: AppTheme.brandPrimary,
+                          padding: EdgeInsets.zero,
+                          minimumSize: const Size(28, 28),
+                        ),
+                        onPressed: () => onMoveNext(week, 1),
+                      ),
+                    ),
+                  ],
                   const Spacer(),
                   Text(
                     '/ $classesPerWeek esperadas',
